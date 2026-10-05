@@ -1,0 +1,465 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model Hotel {
+  id              String          @id @default("hotel-mercier")
+  name            String
+  legalName       String
+  stars           Int             @default(4)
+  roomsCount      Int             @default(48)
+  address         String
+  postcode        String
+  city            String
+  country         String
+  timezone        String          @default("Europe/Brussels")
+  currency        String          @default("€")
+  phone           String
+  email           String
+  website         String
+  bookingEngine   String
+  whatsappNumber  String
+  checkIn         String          @default("15:00")
+  checkOut        String          @default("11:00")
+  vatNumber       String
+  description     String          @db.Text
+  waTopology      String          @default("separate")
+  onboardingDone  Boolean         @default(false)
+  onboardingSteps String          @default("[]")
+  aiMode          String          @default("Autonomous")
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @default(now()) @updatedAt
+  pmsIntegration  PmsIntegration? @relation("HotelPmsIntegration")
+  subscription    Subscription?
+  invoices        Invoice[]
+}
+
+model User {
+  id           String   @id @default(uuid())
+  hotelId      String?  @default("hotel-mercier")
+  name         String
+  email        String   @unique
+  passwordHash String   @default("")
+  role         String
+  title        String   @default("Staff")
+  phone        String   @default("")
+  initials     String   @default("")
+  lastActive   String   @default("now")
+  whatsapp     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @default(now()) @updatedAt
+
+  @@index([hotelId])
+}
+
+model Room {
+  number       String
+  mewsId       String?
+  hotelId      String  @default("hotel-mercier")
+  floor        Int
+  status       String  @default("Clean")
+  cleaningType String  @default("Departure")
+  guestStatus  String  @default("Vacant")
+  arrivalTime  String?
+  priority     String  @default("Normal")
+  cleaner      String?
+  vip          Boolean @default(false)
+  note         String? @db.Text
+  updatedAt    String
+
+  @@id([hotelId, number])
+  @@index([hotelId, status])
+  @@index([hotelId, mewsId])
+  @@index([hotelId])
+}
+
+model Guest {
+  id            String         @id
+  mewsId        String?
+  hotelId       String         @default("hotel-mercier")
+  name          String
+  room          String?
+  country       String
+  language      String
+  vip           Boolean        @default(false)
+  previousStays Int            @default(0)
+  tags          String         @default("[]") @db.VarChar(2048)
+  reservations  Reservation[]
+  conversations Conversation[]
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  @@index([hotelId, name])
+  @@index([hotelId, mewsId])
+  @@index([hotelId])
+}
+
+model Reservation {
+  number    String
+  mewsId    String?
+  hotelId   String   @default("hotel-mercier")
+  guestId   String
+  arrival   String
+  departure String
+  nights    Int
+  adults    Int
+  children  Int      @default(0)
+  roomType  String
+  status    String   @default("Confirmed")
+  rate      String
+  createdAt DateTime @default(now())
+  guest     Guest    @relation(fields: [guestId], references: [id], onDelete: Cascade)
+
+  @@id([hotelId, number])
+  @@index([guestId], map: "Reservation_guestId_fkey")
+  @@index([hotelId, status])
+  @@index([hotelId, arrival])
+  @@index([hotelId, mewsId])
+  @@index([hotelId])
+}
+
+model Conversation {
+  id             String    @id
+  guestId        String
+  stage          String
+  primaryChannel String
+  aiStatus       String
+  sentiment      String
+  subject        String
+  summary        String    @db.Text
+  suggestedReply String    @db.Text
+  knowledgeUsed  String    @default("[]") @db.VarChar(2048)
+  upsellIdeas    String    @default("[]") @db.VarChar(2048)
+  taskIds        String    @default("[]") @db.VarChar(2048)
+  escalation     String?   @db.Text
+  unread         Int       @default(0)
+  lastAt         String
+  aiHandledCount Int       @default(0)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  guest          Guest     @relation(fields: [guestId], references: [id], onDelete: Cascade)
+  messages       Message[]
+
+  @@index([guestId], map: "Conversation_guestId_fkey")
+}
+
+model Message {
+  id             String       @id
+  conversationId String
+  author         String
+  channel        String
+  body           String       @db.Text
+  at             String
+  staffName      String?
+  knowledge      String       @default("[]")
+  buttons        String       @default("[]")
+  confidence     Float?
+  createdAt      DateTime     @default(now())
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId], map: "Message_conversationId_fkey")
+}
+
+model Task {
+  id             String      @id
+  hotelId        String      @default("hotel-mercier")
+  title          String
+  detail         String?     @db.Text
+  room           String?
+  guest          String?
+  department     String
+  priority       String      @default("Normal")
+  createdAt      String
+  due            String?
+  assignee       String?
+  status         String      @default("New")
+  source         String      @default("AI Detection")
+  conversationId String?
+  trail          TaskTrail[]
+
+  @@index([hotelId, status])
+  @@index([hotelId, createdAt])
+  @@index([hotelId])
+}
+
+model TaskTrail {
+  id     Int     @id @default(autoincrement())
+  taskId String
+  at     String
+  text   String
+  via    String?
+  task   Task    @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([taskId], map: "TaskTrail_taskId_fkey")
+}
+
+model Issue {
+  id           String        @id
+  hotelId      String        @default("hotel-mercier")
+  room         String
+  title        String
+  detail       String?       @db.Text
+  priority     String        @default("Normal")
+  reportedBy   String
+  via          String        @default("Dashboard")
+  createdAt    String
+  assignee     String?
+  status       String        @default("Reported")
+  outOfService Boolean       @default(false)
+  updates      IssueUpdate[]
+
+  @@index([hotelId, status])
+  @@index([hotelId, createdAt])
+  @@index([hotelId])
+}
+
+model IssueUpdate {
+  id      Int     @id @default(autoincrement())
+  issueId String
+  at      String
+  text    String
+  via     String?
+  issue   Issue   @relation(fields: [issueId], references: [id], onDelete: Cascade)
+
+  @@index([issueId], map: "IssueUpdate_issueId_fkey")
+}
+
+model Upsell {
+  id      String  @id
+  hotelId String  @default("hotel-mercier")
+  guest   String
+  room    String?
+  offer   String
+  value   Float
+  channel String
+  status  String
+  date    String
+
+  @@index([hotelId, status])
+  @@index([hotelId, date])
+  @@index([hotelId])
+}
+
+model KnowledgeDoc {
+  id              String           @id @default(uuid())
+  hotelId         String           @default("hotel-mercier")
+  name            String
+  category        String
+  format          String
+  size            String           @default("0 KB")
+  updated         String           @default("Just now")
+  status          String           @default("uploading")
+  aiReady         Boolean          @default(true)
+  usedToday       Int              @default(0)
+  fileName        String?
+  mimeType        String?
+  fileSize        Int?
+  storagePath     String?
+  errorMessage    String?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @default(now()) @updatedAt
+  knowledgeChunks KnowledgeChunk[]
+
+  @@index([hotelId, category])
+  @@index([hotelId])
+}
+
+model KnowledgeChunk {
+  id             String       @id @default(uuid())
+  knowledgeDocId String       @map("docId")
+  hotelId        String       @default("hotel-mercier")
+  chunkIndex     Int
+  content        String       @db.Text
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @default(now()) @updatedAt
+  knowledgeDoc   KnowledgeDoc @relation(fields: [knowledgeDocId], references: [id], onDelete: Cascade)
+
+  @@index([knowledgeDocId])
+  @@index([hotelId])
+}
+
+model AiRule {
+  id        Int      @id @default(autoincrement())
+  hotelId   String   @default("hotel-mercier")
+  topic     String
+  mode      String
+  note      String?  @db.Text
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+
+  @@unique([hotelId, topic])
+  @@index([hotelId])
+}
+
+model ActivityItem {
+  id      String  @id
+  hotelId String  @default("hotel-mercier")
+  at      String
+  kind    String
+  text    String
+  meta    String?
+
+  @@index([hotelId, at])
+  @@index([hotelId])
+}
+
+model WaThread {
+  id         String      @id
+  hotelId    String      @default("hotel-mercier")
+  contact    String
+  phone      String
+  role       String
+  department String
+  messages   WaMessage[]
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @default(now()) @updatedAt
+
+  @@index([hotelId])
+}
+
+model WaMessage {
+  id        String   @id
+  threadId  String
+  hotelId   String   @default("hotel-mercier")
+  from      String
+  body      String   @db.Text
+  at        String
+  buttons   String   @default("[]")
+  chosen    String?
+  createdAt DateTime @default(now())
+  thread    WaThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+
+  @@index([threadId])
+  @@index([hotelId])
+}
+
+model PmsIntegration {
+  hotelId              String    @id
+  provider             String    @default("mews")
+  propertyId           String
+  accessTokenEncrypted String?   @db.Text
+  status               String    @default("connected")
+  lastSyncAt           DateTime?
+  lastError            String?   @db.Text
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @default(now()) @updatedAt
+  hotel                Hotel     @relation("HotelPmsIntegration", fields: [hotelId], references: [id], onDelete: Cascade)
+}
+
+model EmailIntegration {
+  id           String    @id @default(uuid())
+  hotelId      String    @unique
+  email        String
+  provider     String    @default("credentials")
+  imapHost     String?
+  imapPort     Int?
+  smtpHost     String?
+  smtpPort     Int?
+  accessToken  String?   @db.Text
+  refreshToken String?   @db.Text
+  tokenExpiry  DateTime?
+  scope        String?   @db.Text
+  historyId    String?
+  lastSyncAt   DateTime?
+  status       String    @default("connected")
+  lastError    String?   @db.Text
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @default(now()) @updatedAt
+}
+
+model WhatsAppIntegration {
+  id                 String   @id @default(uuid())
+  hotelId            String
+  targetType         String
+  phoneNumber        String
+  displayPhoneNumber String?
+  phoneNumberId      String?
+  wabaId             String?
+  accessToken        String?  @db.Text
+  status             String   @default("connected")
+  lastError          String?  @db.Text
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @default(now()) @updatedAt
+
+  @@unique([hotelId, targetType])
+  @@index([phoneNumberId])
+  @@index([hotelId])
+}
+
+model AiConfig {
+  id            String   @id @default(uuid())
+  hotelId       String   @unique
+  tone          String   @default("warm")
+  autonomyLevel String   @default("Autonomous")
+  autoReply     Boolean  @default(true)
+  rulesJson     String?  @db.Text
+  updatedAt     DateTime @default(now()) @updatedAt
+}
+
+model OnboardingState {
+  id             String   @id @default(uuid())
+  hotelId        String   @unique
+  pmsDone        Boolean  @default(false)
+  emailDone      Boolean  @default(false)
+  guestWaDone    Boolean  @default(false)
+  internalWaDone Boolean  @default(false)
+  kbDone         Boolean  @default(false)
+  usersDone      Boolean  @default(false)
+  aiDone         Boolean  @default(false)
+  currentStep    Int      @default(1)
+  updatedAt      DateTime @default(now()) @updatedAt
+}
+
+model Subscription {
+  id                     String    @id @default(uuid())
+  hotelId                String    @unique
+  plan                   String    @default("pro")
+  status                 String    @default("Active")
+  billingCycle           String    @default("monthly")
+  rooms                  Int       @default(48)
+  pricePerRoom           Float     @default(7.0)
+  seatsUsed              Int       @default(4)
+  startedOn              String    @default("14 Aug 2025")
+  renewsOn               String    @default("14 Aug 2026")
+  paymentBrand           String?   @default("Visa")
+  paymentLast4           String?   @default("4417")
+  paymentExpiry          String?   @default("09/28")
+  paymentHolder          String?   @default("Hotel Mercier BV")
+  provider               String?   @default("none")
+  providerCustomerId     String?
+  providerSubscriptionId String?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @default(now()) @updatedAt
+  hotel                  Hotel     @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  invoices               Invoice[]
+
+  @@index([hotelId])
+}
+
+model Invoice {
+  id                String        @id @default(uuid())
+  hotelId           String
+  subscriptionId    String?
+  number            String
+  date              String
+  period            String
+  amount            Float
+  currency          String        @default("EUR")
+  status            String        @default("Paid")
+  pdfUrl            String?
+  providerInvoiceId String?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @default(now()) @updatedAt
+  hotel             Hotel         @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  subscription      Subscription? @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@index([hotelId])
+  @@index([subscriptionId])
+}
+
+

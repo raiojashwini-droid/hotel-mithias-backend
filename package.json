@@ -1,0 +1,37 @@
+{
+  "name": "hotelogx-connect-backend",
+  "version": "1.0.0",
+  "description": "Backend API for Hotelogx Connect Hotel Assistant",
+  "main": "src/server.js",
+  "type": "module",
+  "scripts": {
+    "dev": "nodemon src/server.js",
+    "start": "npx prisma generate && node src/server.js",
+    "postinstall": "prisma generate",
+    "test": "node --test src/tests/*.test.js",
+    "prisma:generate": "prisma generate",
+    "prisma:push": "prisma db push",
+    "prisma:seed": "node prisma/seed.js",
+    "prisma:studio": "prisma studio"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.4.1",
+    "bcryptjs": "^3.0.2",
+    "cors": "^2.8.5",
+    "csv-parse": "^7.0.2",
+    "docx": "^9.7.1",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^2.3.0",
+    "pdf-parse": "^2.4.5",
+    "prisma": "^6.4.1",
+    "uuid": "^14.0.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.9"
+  },
+  "allowScripts": {
+    "@prisma/client@6.19.3": true
+  }
+}
