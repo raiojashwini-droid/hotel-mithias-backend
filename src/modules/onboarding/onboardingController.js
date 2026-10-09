@@ -149,6 +149,12 @@ export const getOnboardingStatus = async (req, res, next) => {
       complete: Boolean(hotel?.onboardingDone),
       done: doneMap,
       hotelProfile: profile,
+      emailIntegration: emailInteg && isEmailConnected ? {
+        email: emailInteg.email,
+        provider: emailInteg.provider,
+        status: emailInteg.status,
+        lastSyncAt: emailInteg.lastSyncAt,
+      } : null,
     }, 'Onboarding status fetched');
   } catch (error) {
     next(error);

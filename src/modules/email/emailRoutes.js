@@ -10,6 +10,8 @@ import {
   microsoftOAuthCallbackController,
   syncMicrosoftController,
   testMicrosoftConnectionController,
+  getEmailStatusController,
+  disconnectEmailController,
 } from './emailController.js';
 import { authenticate } from '../../middlewares/auth.js';
 
@@ -35,6 +37,10 @@ const resolveEmailAuth = (req, res, next) => {
   return res.status(401).json({ success: false, message: 'Authentication required. Missing or invalid Bearer token.', data: null });
 };
 
+// Email integration status and disconnect (Authenticated)
+router.get('/status', getEmailStatusController);
+router.post('/disconnect', resolveEmailAuth, disconnectEmailController);
+
 // Gmail & Microsoft Inbox Synchronization (Authenticated)
 router.post('/sync', resolveEmailAuth, syncGmailController);
 router.post('/sync/microsoft', resolveEmailAuth, syncMicrosoftController);
@@ -50,4 +56,5 @@ router.post('/inbound', inboundEmailController);
 router.post('/send', resolveEmailAuth, sendEmailController);
 
 export default router;
+
 

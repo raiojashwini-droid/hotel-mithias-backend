@@ -6,6 +6,7 @@ import { realtimeService } from '../../services/realtimeService.js';
 import { extractRoomNumber, processGuestMessageAI } from '../conversations/aiService.js';
 import { exchangeMetaCodeForToken, connectManualWhatsAppCredentials } from './whatsappOAuth.js';
 import { decryptToken, verifyOAuthState } from '../../utils/tokenCrypto.js';
+import { verifyToken } from '../../utils/jwt.js';
 
 /**
  * Helper: Sanitize phone numbers to pure E.164 digits without +, -, or spaces
@@ -1243,5 +1244,88 @@ export const handleManualConnect = async (req, res, next) => {
     next(error);
   }
 };
+
+/**
+ * Endpoint: GET /api/whatsapp/status (Get WhatsApp Integration Status for Hotel)
+ */
+export const getWhatsAppStatusController = async (req, res) => {
+  try {
+    let hotelId = req.user?.hotelId || req.headers['x-hotel-id'] || req.query?.hotelId;
+    if (!hotelId && req.headers.authorization?.startsWith('Bearer ')) {
+      try {
+        const decoded = verifyToken(req.headers.authorization.split(' ')[1]);
+        if (decoded?.hotelId) hotelId = decoded.hotelId;
+      } catch (_) {}
+    }
+    if (!hotelId) {
+      const activeUser = await prisma.user.findFirst({ select: { hotelId: true }, orderBy: { createdAt: 'desc' } }).catch(() => null);
+      if (activeUser?.hotelId) {
+        hotelId = activeUser.hotelId;
+      } else {
+        const activeHotel = await prisma.hotel.findFirst({ orderBy: { createdAt: 'desc' } }).catch(() => null);
+        if (activeHotel?.id) hotelId = activeHotel.id;
+      }
+    }
+    if (!hotelId) {
+      return errorResponse(res, 'Authentication and tenant context required', 401);
+    }
+
+    const integration = await prisma.whatsAppIntegration.findFirst({
+      where: { hotelId, status: 'connected' },
+      orderBy: { updatedAt: 'desc' },
+    });
+
+    if (!integration || integration.status !== 'connected') {
+      return successResponse(res, {
+        connected: false,
+        number: '',
+        waba: '',
+        quality: 'High',
+        templates: 0,
+      }, 'No WhatsApp integration connected');
+    }
+
+    return successResponse(res, {
+      connected: true,
+      number: integration.displayPhoneNumber || integration.phoneNumber || '',
+      waba: integration.wabaId ? `WABA · ${integration.wabaId}` : 'Meta Business Account',
+      quality: 'High',
+      templates: 0,
+      phoneNumberId: integration.phoneNumberId,
+      wabaId: integration.wabaId,
+      targetType: integration.targetType,
+      updatedAt: integration.updatedAt,
+    }, 'WhatsApp integration status fetched');
+  } catch (error) {
+    return errorResponse(res, error.message, 500);
+  }
+};
+
+/**
+ * Endpoint: POST /api/whatsapp/disconnect (Disconnect WhatsApp Integration)
+ */
+export const disconnectWhatsAppController = async (req, res) => {
+  try {
+    let hotelId = req.user?.hotelId || req.headers['x-hotel-id'] || req.body?.hotelId;
+    if (!hotelId && req.headers.authorization?.startsWith('Bearer ')) {
+      try {
+        const decoded = verifyToken(req.headers.authorization.split(' ')[1]);
+        if (decoded?.hotelId) hotelId = decoded.hotelId;
+      } catch (_) {}
+    }
+    if (!hotelId) {
+      return errorResponse(res, 'Authentication and tenant context required', 401);
+    }
+
+    await prisma.whatsAppIntegration.deleteMany({
+      where: { hotelId },
+    });
+
+    return successResponse(res, { disconnected: true }, 'WhatsApp integration disconnected successfully');
+  } catch (error) {
+    return errorResponse(res, error.message, 500);
+  }
+};
+
 
 

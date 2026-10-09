@@ -44,6 +44,12 @@ export const initiateGoogleOAuthController = async (req, res) => {
       } catch (_) {}
     }
     if (!hotelId) {
+      const activeHotel = await prisma.hotel.findFirst({ orderBy: { createdAt: 'desc' } }).catch(() => null);
+      if (activeHotel?.id) {
+        hotelId = activeHotel.id;
+      }
+    }
+    if (!hotelId) {
       return errorResponse(res, 'Authentication and hotel context required', 401);
     }
     const redirectBack = req.query.redirectBack || '/onboarding';
@@ -616,6 +622,67 @@ export const testMicrosoftConnectionController = async (req, res) => {
       return errorResponse(res, result.error || 'Microsoft connection test failed', 400);
     }
     return successResponse(res, result, 'Microsoft connection verified successfully');
+  } catch (error) {
+    return errorResponse(res, error.message, 500);
+  }
+};
+
+/**
+ * Controller to get current hotel's email integration status
+ * Endpoint: GET /api/email/status
+ */
+export const getEmailStatusController = async (req, res) => {
+  try {
+    let hotelId = req.user?.hotelId || req.headers['x-hotel-id'] || req.query?.hotelId;
+    if (!hotelId && req.headers.authorization?.startsWith('Bearer ')) {
+      try {
+        const decoded = verifyToken(req.headers.authorization.split(' ')[1]);
+        if (decoded?.hotelId) hotelId = decoded.hotelId;
+      } catch (_) {}
+    }
+    if (!hotelId) {
+      const activeUser = await prisma.user.findFirst({ select: { hotelId: true }, orderBy: { createdAt: 'desc' } }).catch(() => null);
+      if (activeUser?.hotelId) {
+        hotelId = activeUser.hotelId;
+      } else {
+        const activeHotel = await prisma.hotel.findFirst({ orderBy: { createdAt: 'desc' } }).catch(() => null);
+        if (activeHotel?.id) hotelId = activeHotel.id;
+      }
+    }
+    if (!hotelId) {
+      return errorResponse(res, 'Authentication and tenant context required', 401);
+    }
+    const integration = await prisma.emailIntegration.findUnique({
+      where: { hotelId },
+    });
+    if (!integration || integration.status !== 'connected') {
+      return successResponse(res, { connected: false, provider: null, email: null }, 'No email integration connected');
+    }
+    return successResponse(res, {
+      connected: true,
+      provider: integration.provider,
+      email: integration.email,
+      lastSyncAt: integration.lastSyncAt,
+    }, 'Email integration status fetched');
+  } catch (error) {
+    return errorResponse(res, error.message, 500);
+  }
+};
+
+/**
+ * Controller to disconnect email integration
+ * Endpoint: POST /api/email/disconnect
+ */
+export const disconnectEmailController = async (req, res) => {
+  try {
+    const hotelId = req.user?.hotelId || req.headers['x-hotel-id'] || req.body?.hotelId;
+    if (!hotelId) {
+      return errorResponse(res, 'Authentication and tenant context required', 401);
+    }
+    await prisma.emailIntegration.deleteMany({
+      where: { hotelId },
+    });
+    return successResponse(res, { disconnected: true }, 'Email integration disconnected successfully');
   } catch (error) {
     return errorResponse(res, error.message, 500);
   }

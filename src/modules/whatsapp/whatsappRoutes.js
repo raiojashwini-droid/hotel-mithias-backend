@@ -9,10 +9,14 @@ import {
   handleEmbeddedSignupExchange,
   handleOAuthCallback,
   handleManualConnect,
+  getWhatsAppStatusController,
+  disconnectWhatsAppController,
 } from './whatsappController.js';
 
 const router = Router();
 
+router.get('/status', optionalAuth, getWhatsAppStatusController);
+router.post('/disconnect', optionalAuth, disconnectWhatsAppController);
 router.get('/threads', authenticate, getThreads);
 router.post('/action', authenticate, handleAction);
 router.get('/webhook', verifyWebhook);
