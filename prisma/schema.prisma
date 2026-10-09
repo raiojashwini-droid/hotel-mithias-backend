@@ -159,6 +159,7 @@ model Message {
   knowledge      String       @default("[]")
   buttons        String       @default("[]")
   confidence     Float?
+  deliveryStatus String?      // WhatsApp delivery receipt: sent | delivered | read | failed
   createdAt      DateTime     @default(now())
   conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 

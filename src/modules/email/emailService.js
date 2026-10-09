@@ -499,9 +499,12 @@ export const emailService = {
         });
         dispatched = Boolean(sendResult?.success);
       } else {
-        // Fallback for demo/unconfigured hotels without credentials
-        console.log(`[Email Service Fallback] Dispatched reply to ${toEmail} (hotel: ${hotelId}): "${text.slice(0, 60)}"`);
-        dispatched = true;
+        if (process.env.NODE_ENV === 'test') {
+          console.log(`[Email Service Test Fallback] Dispatched reply to ${toEmail} (hotel: ${hotelId}): "${text.slice(0, 60)}"`);
+          dispatched = true;
+        } else {
+          throw new Error(`No active email provider connected for hotel "${hotelId}". Please connect Gmail, Microsoft 365, or SMTP in Settings before sending guest replies.`);
+        }
       }
     } catch (sendErr) {
       console.warn(`[Email Send Warning for ${hotelId}]:`, sendErr.message);

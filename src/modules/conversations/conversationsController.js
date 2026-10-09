@@ -13,6 +13,65 @@ const safeJsonParse = (val, fallback = []) => {
   }
 };
 
+/**
+ * Extract a guest's phone number from their record using documented, validated formats only.
+ * Validated sources:
+ * 1. Direct guest.phone or guest.phoneNumber field
+ * 2. Deterministic WhatsApp Guest ID format: g-wa-{hotelId}-{e164Digits}
+ * 3. Explicitly labeled phone tags: "phone:+...", "phone:...", "wa:+...", "wa:...", "whatsapp:+..."
+ *
+ * Arbitrary unlabeled numeric strings (e.g. room numbers, booking codes) are explicitly rejected.
+ */
+export const extractGuestPhone = (guest) => {
+  if (!guest) return null;
+
+  // 1. Direct documented fields
+  if (guest.phone && typeof guest.phone === 'string') {
+    const digits = guest.phone.replace(/\D/g, '');
+    if (digits.length >= 7 && digits.length <= 15) return digits;
+  }
+  if (guest.phoneNumber && typeof guest.phoneNumber === 'string') {
+    const digits = guest.phoneNumber.replace(/\D/g, '');
+    if (digits.length >= 7 && digits.length <= 15) return digits;
+  }
+
+  // 2. Deterministic WhatsApp guest ID format: g-wa-{hotelId}-{digits}
+  if (guest.id && typeof guest.id === 'string' && guest.id.startsWith('g-wa-')) {
+    const lastHyphen = guest.id.lastIndexOf('-');
+    if (lastHyphen > 4) {
+      const candidateDigits = guest.id.slice(lastHyphen + 1);
+      if (/^\d{7,15}$/.test(candidateDigits)) {
+        return candidateDigits;
+      }
+    }
+  }
+
+  // 3. Explicitly formatted and labeled phone tags (reject arbitrary unlabeled strings)
+  const tags = safeJsonParse(guest.tags, []);
+  if (Array.isArray(tags)) {
+    for (const tag of tags) {
+      if (typeof tag === 'string') {
+        const lower = tag.trim().toLowerCase();
+        let candidate = null;
+        if (lower.startsWith('phone:')) {
+          candidate = tag.slice(6);
+        } else if (lower.startsWith('wa:')) {
+          candidate = tag.slice(3);
+        } else if (lower.startsWith('whatsapp:')) {
+          candidate = tag.slice(9);
+        }
+
+        if (candidate) {
+          const digits = candidate.replace(/\D/g, '');
+          if (digits.length >= 7 && digits.length <= 15) return digits;
+        }
+      }
+    }
+  }
+
+  return null;
+};
+
 export const getConversations = async (req, res, next) => {
   try {
     const hotelId = req.user?.hotelId;
@@ -171,34 +230,30 @@ export const sendReply = async (req, res, next) => {
       return errorResponse(res, 'Conversation not found', 404);
     }
 
+    const targetChannel = channel || conv.primaryChannel || 'email';
+
+    // Prevent duplicate staff reply submissions with identical body/channel (< 60 seconds)
+    const recentDuplicate = await prisma.message.findFirst({
+      where: {
+        conversationId: id,
+        author: 'staff',
+        body,
+        channel: targetChannel,
+        createdAt: { gte: new Date(Date.now() - 60000) },
+      },
+    });
+    if (recentDuplicate) {
+      return successResponse(res, recentDuplicate, 'Reply already submitted (duplicate prevention)');
+    }
+
     const now = new Date();
     const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
     const msgId = `m-${Date.now()}`;
-    const targetChannel = channel || conv.primaryChannel || 'email';
 
-    const message = await prisma.message.create({
-      data: {
-        id: msgId,
-        conversationId: id,
-        author: 'staff',
-        channel: targetChannel,
-        body,
-        at: timeStr,
-        staffName,
-      },
-    });
+    // Outbound Dispatch Lifecycle
+    let deliveryStatus = 'sent';
+    let dispatchResult = null;
 
-    await prisma.conversation.update({
-      where: { id },
-      data: {
-        lastAt: timeStr,
-        aiStatus: 'human-takeover',
-        suggestedReply: '',
-        unread: 0,
-      },
-    });
-
-    // Real Outbound Email Dispatch via Gmail API
     if (targetChannel === 'email') {
       let toEmail = req.body.toEmail;
       if (!toEmail) {
@@ -224,26 +279,69 @@ export const sendReply = async (req, res, next) => {
         }
       }
       if (toEmail) {
-        emailService.sendGuestEmail({
-          hotelId,
-          conversationId: id,
-          toEmail,
-          subject: conv.subject || 'Message from Hotel Reception',
-          text: body,
-          author: 'staff',
-          recordMessage: false,
-        }).catch((err) => {
+        try {
+          await emailService.sendGuestEmail({
+            hotelId,
+            conversationId: id,
+            toEmail,
+            subject: conv.subject || 'Message from Hotel Reception',
+            text: body,
+            author: 'staff',
+            recordMessage: false,
+          });
+        } catch (err) {
           console.warn('[SendReply Outbound Email Warning]:', err.message);
-        });
+          deliveryStatus = 'failed';
+          dispatchResult = { success: false, reason: err.message };
+        }
+      } else {
+        deliveryStatus = 'failed';
+        dispatchResult = { success: false, reason: 'Recipient email address not found' };
       }
     } else if (targetChannel === 'whatsapp') {
-      const guestPhone = conv.guest?.phone;
+      const guestPhone = extractGuestPhone(conv.guest);
       if (guestPhone) {
-        sendMetaWhatsAppMessage(guestPhone, body, [], hotelId).catch((err) => {
+        try {
+          dispatchResult = await sendMetaWhatsAppMessage(guestPhone, body, [], hotelId, 'guest');
+          if (dispatchResult.success) {
+            deliveryStatus = dispatchResult.simulated ? 'simulated' : 'sent';
+          } else {
+            deliveryStatus = 'failed';
+          }
+        } catch (err) {
           console.warn('[SendReply Outbound WhatsApp Warning]:', err.message);
-        });
+          deliveryStatus = 'failed';
+          dispatchResult = { success: false, reason: err.message };
+        }
+      } else {
+        console.warn(`[SendReply] Could not resolve validated phone for guest ${conv.guest?.id}; WhatsApp message marked failed`);
+        deliveryStatus = 'failed';
+        dispatchResult = { success: false, reason: 'Guest phone number not found or format invalid' };
       }
     }
+
+    const message = await prisma.message.create({
+      data: {
+        id: msgId,
+        conversationId: id,
+        author: 'staff',
+        channel: targetChannel,
+        body,
+        at: timeStr,
+        staffName,
+        deliveryStatus,
+      },
+    });
+
+    await prisma.conversation.update({
+      where: { id },
+      data: {
+        lastAt: timeStr,
+        aiStatus: 'human-takeover',
+        suggestedReply: '',
+        unread: 0,
+      },
+    });
 
     await prisma.activityItem.create({
       data: {
@@ -256,7 +354,11 @@ export const sendReply = async (req, res, next) => {
       },
     }).catch(() => {});
 
-    return successResponse(res, message, 'Reply sent');
+    return successResponse(
+      res,
+      { ...message, dispatch: dispatchResult },
+      deliveryStatus === 'failed' ? 'Staff reply saved (outbound delivery failed)' : 'Reply sent'
+    );
   } catch (error) {
     next(error);
   }

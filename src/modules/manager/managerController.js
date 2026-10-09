@@ -316,3 +316,114 @@ export const getKnowledgeDocs = async (req, res, next) => {
     next(error);
   }
 };
+
+/**
+ * Endpoint: GET /api/manager/trends
+ * Computes rolling 7-day historical trends for conversations, AI resolution rate, and upsells
+ */
+export const getDashboardTrends = async (req, res, next) => {
+  try {
+    const hotelId = req.user?.hotelId;
+    if (!hotelId) return errorResponse(res, 'Unauthorized: hotel context required', 401);
+
+    const now = new Date();
+    const days = [];
+    const weekdays = [];
+    const weekdayShort = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(now);
+      d.setDate(d.getDate() - i);
+      const yyyy = d.getFullYear();
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+      const dateStr = `${yyyy}-${mm}-${dd}`;
+      const start = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0);
+      const end = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999);
+      days.push({
+        dateStr,
+        start,
+        end,
+        dayName: weekdayShort[start.getDay()],
+      });
+      weekdays.push(weekdayShort[start.getDay()]);
+    }
+
+    const sevenDaysAgo = days[0].start;
+
+    const [conversations, upsells] = await Promise.all([
+      prisma.conversation.findMany({
+        where: {
+          guest: { hotelId },
+          createdAt: { gte: sevenDaysAgo },
+        },
+        select: {
+          id: true,
+          aiStatus: true,
+          aiHandledCount: true,
+          createdAt: true,
+        },
+      }),
+      prisma.upsell.findMany({
+        where: {
+          hotelId,
+          status: 'Accepted',
+        },
+        select: {
+          id: true,
+          value: true,
+          date: true,
+        },
+      }).catch(() => []),
+    ]);
+
+    const conversationTrend = [];
+    const aiTrend = [];
+    const upsellTrend = [];
+    let hasData = false;
+
+    for (const day of days) {
+      const dayConvs = conversations.filter((c) => {
+        const cDate = new Date(c.createdAt);
+        return cDate >= day.start && cDate <= day.end;
+      });
+
+      const convCount = dayConvs.length;
+      conversationTrend.push(convCount);
+      if (convCount > 0) hasData = true;
+
+      if (convCount > 0) {
+        const aiHandled = dayConvs.filter(
+          (c) =>
+            (c.aiHandledCount && c.aiHandledCount > 0) ||
+            ['ai-handling', 'resolved', 'Done', 'Autonomous'].includes(c.aiStatus)
+        ).length;
+        aiTrend.push(Math.round((aiHandled / convCount) * 100));
+      } else {
+        aiTrend.push(0);
+      }
+
+      const dayUpsells = upsells.filter((u) => {
+        if (!u.date) return false;
+        return u.date.includes(day.dateStr);
+      });
+      const dayUpsellTotal = dayUpsells.reduce((acc, curr) => acc + (Number(curr.value) || 0), 0);
+      upsellTrend.push(dayUpsellTotal);
+      if (dayUpsellTotal > 0) hasData = true;
+    }
+
+    return successResponse(
+      res,
+      {
+        weekdays,
+        conversationTrend,
+        aiTrend,
+        upsellTrend,
+        hasData,
+      },
+      'Dashboard 7-day rolling trends computed'
+    );
+  } catch (error) {
+    next(error);
+  }
+};

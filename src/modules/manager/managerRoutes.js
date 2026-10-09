@@ -6,6 +6,7 @@ import {
   getAiRules,
   updateAiRules,
   getKnowledgeDocs,
+  getDashboardTrends,
 } from './managerController.js';
 
 const router = Router();
@@ -20,6 +21,7 @@ const optionalAuth = (req, res, next) => {
 };
 
 router.get('/briefing', authenticate, getBriefing);
+router.get('/trends', authenticate, getDashboardTrends);
 router.get('/activity', authenticate, getActivityFeed);
 router.get('/rules', authenticate, getAiRules);
 router.put('/rules', authenticate, updateAiRules);

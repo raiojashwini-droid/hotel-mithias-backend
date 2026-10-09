@@ -22,9 +22,6 @@ describe('Settings Integration Automated Test Suite (Users & Roles + Subscriptio
     const port = server.address().port;
     baseUrl = `http://127.0.0.1:${port}/api`;
 
-    tokenA = signToken({ id: 'u-jonas', role: 'manager', email: 'jonas@hotelmercier.be', hotelId: hotelA });
-    tokenB = signToken({ id: 'u-amelie', role: 'manager', email: 'amelie@hotelmercier.be', hotelId: hotelB });
-
     // Clean prior test records
     await prisma.invoice.deleteMany({ where: { hotelId: { in: [hotelA, hotelB] } } });
     await prisma.subscription.deleteMany({ where: { hotelId: { in: [hotelA, hotelB] } } });
@@ -69,6 +66,30 @@ describe('Settings Integration Automated Test Suite (Users & Roles + Subscriptio
         description: 'Test Hotel Beta',
       },
     });
+
+    // Create manager users for authentication
+    await prisma.user.create({
+      data: {
+        id: 'u-settings-mgr-a',
+        email: 'mgr-a@hotel-alpha.com',
+        name: 'Manager Alpha',
+        role: 'manager',
+        hotelId: hotelA,
+      },
+    });
+
+    await prisma.user.create({
+      data: {
+        id: 'u-settings-mgr-b',
+        email: 'mgr-b@hotel-beta.com',
+        name: 'Manager Beta',
+        role: 'manager',
+        hotelId: hotelB,
+      },
+    });
+
+    tokenA = signToken({ id: 'u-settings-mgr-a', role: 'manager', email: 'mgr-a@hotel-alpha.com', hotelId: hotelA });
+    tokenB = signToken({ id: 'u-settings-mgr-b', role: 'manager', email: 'mgr-b@hotel-beta.com', hotelId: hotelB });
   });
 
   after(async () => {

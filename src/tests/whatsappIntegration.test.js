@@ -4,10 +4,15 @@ import http from 'node:http';
 import app from '../app.js';
 import { prisma } from '../config/database.js';
 import { ensureWhatsAppColumns } from '../modules/onboarding/onboardingController.js';
+import { signToken } from '../utils/jwt.js';
+
+process.env.NODE_ENV = 'test';
 
 describe('Guest WhatsApp Integration & Multi-Tenant Test Suite (Step 4)', () => {
   let server;
   let baseUrl;
+  let tokenA;
+  let tokenB;
   const hotelIdA = 'test-hotel-wa-a';
   const hotelIdB = 'test-hotel-wa-b';
   const phoneA = '32491111111';
@@ -103,6 +108,30 @@ describe('Guest WhatsApp Integration & Multi-Tenant Test Suite (Step 4)', () => 
         status: 'connected',
       },
     });
+
+    // Seed manager users for authentication
+    await prisma.user.create({
+      data: {
+        id: 'u-wa-mgr-a',
+        email: 'mgr-a@alphahotel.be',
+        name: 'Manager Alpha',
+        role: 'manager',
+        hotelId: hotelIdA,
+      },
+    });
+
+    await prisma.user.create({
+      data: {
+        id: 'u-wa-mgr-b',
+        email: 'mgr-b@betahotel.be',
+        name: 'Manager Beta',
+        role: 'manager',
+        hotelId: hotelIdB,
+      },
+    });
+
+    tokenA = signToken({ id: 'u-wa-mgr-a', role: 'manager', email: 'mgr-a@alphahotel.be', hotelId: hotelIdA });
+    tokenB = signToken({ id: 'u-wa-mgr-b', role: 'manager', email: 'mgr-b@betahotel.be', hotelId: hotelIdB });
   });
 
   after(async () => {
@@ -345,7 +374,10 @@ describe('Guest WhatsApp Integration & Multi-Tenant Test Suite (Step 4)', () => 
 
     const res = await fetch(`${baseUrl}/whatsapp/send`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${tokenA}`,
+      },
       body: JSON.stringify(sendPayload),
     });
 
@@ -367,7 +399,10 @@ describe('Guest WhatsApp Integration & Multi-Tenant Test Suite (Step 4)', () => 
 
     const res = await fetch(`${baseUrl}/whatsapp/embedded-signup`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${tokenA}`,
+      },
       body: JSON.stringify(signupPayload),
     });
 

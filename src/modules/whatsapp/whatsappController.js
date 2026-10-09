@@ -18,7 +18,15 @@ export const sanitizePhoneNumber = (phone) => {
 /**
  * Helper: Send Outbound WhatsApp Message via Meta Cloud Graph API
  */
-export const sendMetaWhatsAppMessage = async (toPhone, text, buttons = [], hotelId = null) => {
+/**
+ * Helper: Send Outbound WhatsApp Message via Meta Cloud Graph API
+ * @param {string} toPhone - Recipient E.164 phone digits
+ * @param {string} text - Message body
+ * @param {Array}  buttons - Optional quick-reply buttons (max 3)
+ * @param {string|null} hotelId - Tenant hotel ID for credential lookup
+ * @param {'guest'|'internal'|null} targetType - Integration type preference
+ */
+export const sendMetaWhatsAppMessage = async (toPhone, text, buttons = [], hotelId = null, targetType = 'guest') => {
   const cleanPhone = sanitizePhoneNumber(toPhone);
   if (!cleanPhone) {
     console.warn('[WhatsApp] No valid recipient phone number provided for dispatch');
@@ -29,17 +37,28 @@ export const sendMetaWhatsAppMessage = async (toPhone, text, buttons = [], hotel
   let phoneId = null;
 
   // 1. Resolve tenant-specific Meta WhatsApp credentials from database
+  //    Strictly enforce targetType ('guest' vs 'internal'). Do not fall back to unrelated target types.
   if (hotelId) {
     try {
+      const requiredTarget = targetType || 'guest';
       const integration = await prisma.whatsAppIntegration.findFirst({
-        where: { hotelId, status: 'connected' },
+        where: { hotelId, status: 'connected', targetType: requiredTarget },
       });
-      if (integration) {
-        token = integration.accessToken ? decryptToken(integration.accessToken) : null;
-        phoneId = integration.phoneNumberId || null;
+
+      if (!integration) {
+        console.warn(`[WhatsApp] No connected "${requiredTarget}" WhatsApp integration found for hotel "${hotelId}"`);
+        return {
+          success: false,
+          reason: `No connected "${requiredTarget}" WhatsApp integration configured for this hotel`,
+          status: 'unconfigured',
+        };
       }
+
+      token = integration.accessToken ? decryptToken(integration.accessToken) : null;
+      phoneId = integration.phoneNumberId || null;
     } catch (dbErr) {
       console.warn('[WhatsApp] Database lookup error for hotel credentials:', dbErr.message);
+      return { success: false, reason: dbErr.message };
     }
   }
 
@@ -61,8 +80,16 @@ export const sendMetaWhatsAppMessage = async (toPhone, text, buttons = [], hotel
     phoneId.includes('mock') ||
     phoneId.includes('meta_phone_id')
   ) {
+    const isTest = process.env.NODE_ENV === 'test';
     console.log(`[WhatsApp Simulator] Outbound message to +${cleanPhone} (hotel: ${hotelId || 'default'}): "${text}"`);
-    return { success: true, simulated: true };
+    return {
+      success: isTest,
+      simulated: true,
+      delivered: isTest,
+      warning: !isTest
+        ? 'Meta WhatsApp credentials unconfigured. Message logged to local simulator; not delivered to real guest.'
+        : undefined,
+    };
   }
 
   try {
@@ -120,6 +147,93 @@ export const sendMetaWhatsAppMessage = async (toPhone, text, buttons = [], hotel
     return { success: true, messageId: data?.messages?.[0]?.id };
   } catch (err) {
     console.error('[WhatsApp Network Error]', err.message);
+    return { success: false, error: err.message };
+  }
+};
+
+/**
+ * Helper: Send a pre-approved Meta Message Template
+ * Required when the guest's 24-hour messaging window has closed.
+ *
+ * @param {string} toPhone  - Recipient E.164 digits
+ * @param {string} templateName - Pre-approved template name (e.g. 'hotel_welcome')
+ * @param {string} languageCode - BCP-47 language code (e.g. 'en_US')
+ * @param {Array}  components  - Template component parameters
+ * @param {string|null} hotelId - Tenant hotel ID for credential lookup
+ */
+export const sendWhatsAppTemplate = async (toPhone, templateName, languageCode = 'en_US', components = [], hotelId = null) => {
+  const cleanPhone = sanitizePhoneNumber(toPhone);
+  if (!cleanPhone) {
+    console.warn('[WhatsApp Template] No valid recipient phone number provided');
+    return { success: false, reason: 'Invalid phone number' };
+  }
+
+  let token = null;
+  let phoneId = null;
+
+  if (hotelId) {
+    try {
+      const integration = await prisma.whatsAppIntegration.findFirst({
+        where: { hotelId, status: 'connected', targetType: 'guest' },
+      });
+
+      if (!integration) {
+        console.warn(`[WhatsApp Template] No connected guest WhatsApp integration found for hotel "${hotelId}"`);
+        return {
+          success: false,
+          reason: 'No connected guest WhatsApp integration configured for this hotel',
+          status: 'unconfigured',
+        };
+      }
+
+      token = integration.accessToken ? decryptToken(integration.accessToken) : null;
+      phoneId = integration.phoneNumberId || null;
+    } catch (dbErr) {
+      console.warn('[WhatsApp Template] DB credential lookup error:', dbErr.message);
+      return { success: false, reason: dbErr.message };
+    }
+  }
+
+  if (!token) token = process.env.WHATSAPP_TOKEN || process.env.META_ACCESS_TOKEN;
+  if (!phoneId) phoneId = process.env.WHATSAPP_PHONE_NUMBER_ID || process.env.META_PHONE_NUMBER_ID;
+
+  if (!token || !phoneId || phoneId.includes('test') || phoneId.includes('mock') || phoneId.includes('meta_phone_id')) {
+    console.log(`[WhatsApp Template Simulator] Template "${templateName}" to +${cleanPhone}`);
+    return { success: process.env.NODE_ENV === 'test', simulated: true };
+  }
+
+  try {
+    const payload = {
+      messaging_product: 'whatsapp',
+      to: cleanPhone,
+      type: 'template',
+      template: {
+        name: templateName,
+        language: { code: languageCode },
+        ...(components.length > 0 ? { components } : {}),
+      },
+    };
+
+    const response = await fetch(`https://graph.facebook.com/v19.0/${phoneId}/messages`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(10000),
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const errMsg = data?.error?.message || response.statusText;
+      console.warn('[WhatsApp Template API Error]', errMsg);
+      return { success: false, error: errMsg, status: response.status };
+    }
+
+    return { success: true, messageId: data?.messages?.[0]?.id };
+  } catch (err) {
+    console.error('[WhatsApp Template Network Error]', err.message);
     return { success: false, error: err.message };
   }
 };
@@ -386,6 +500,53 @@ export const handleWebhook = async (req, res) => {
       const metaPhoneNumberId = change?.metadata?.phone_number_id;
       const metaDisplayPhone = change?.metadata?.display_phone_number;
       const metaWabaId = entry?.id;
+
+      // Handle delivery/read/failed status updates — not new messages
+      const statuses = change?.statuses;
+      if (statuses && statuses.length > 0) {
+        const statusRank = { failed: -1, sent: 1, delivered: 2, read: 3 };
+
+        for (const status of statuses) {
+          const { id: waMessageId, status: deliveryStatus, timestamp, recipient_id, errors } = status;
+          if (!waMessageId) continue;
+
+          const dbMsgId = `m-wa-${waMessageId}`;
+
+          try {
+            const existingMsg = await prisma.message.findFirst({
+              where: {
+                OR: [{ id: dbMsgId }, { id: waMessageId }],
+              },
+            });
+
+            if (existingMsg) {
+              const currentRank = statusRank[existingMsg.deliveryStatus] || 0;
+              const nextRank = statusRank[deliveryStatus] || 0;
+
+              // Advance status or record failure; do not regress from 'read' to 'delivered'/'sent'
+              if (nextRank >= currentRank || deliveryStatus === 'failed' || !existingMsg.deliveryStatus) {
+                await prisma.message.update({
+                  where: { id: existingMsg.id },
+                  data: { deliveryStatus: deliveryStatus || 'unknown' },
+                });
+                console.log(`[WhatsApp Webhook] Updated message "${existingMsg.id}" deliveryStatus to "${deliveryStatus}"`);
+              } else {
+                console.log(`[WhatsApp Webhook] Ignored status regression ("${deliveryStatus}" after "${existingMsg.deliveryStatus}") for message "${existingMsg.id}"`);
+              }
+            } else {
+              console.log(`[WhatsApp Webhook] Unmapped Meta message ID "${waMessageId}" received status "${deliveryStatus}"`);
+            }
+          } catch (dbErr) {
+            console.warn(`[WhatsApp Webhook] Error updating status for message "${waMessageId}":`, dbErr.message);
+          }
+
+          if (deliveryStatus === 'failed' && errors?.length) {
+            const errMsg = errors[0]?.message || 'Unknown error';
+            console.warn(`[WhatsApp Webhook] Delivery FAILED for message ${waMessageId} to ${recipient_id}: ${errMsg}`);
+          }
+        }
+        return res.sendStatus(200);
+      }
 
       if (!messages || messages.length === 0) {
         return res.sendStatus(200);
@@ -927,7 +1088,14 @@ export const sendTestMessage = async (req, res, next) => {
     }
 
     const result = await sendMetaWhatsAppMessage(to, message, buttons, hotelId);
-    return successResponse(res, result, 'WhatsApp message dispatched');
+    if (result.simulated && !result.success) {
+      return errorResponse(
+        res,
+        'WhatsApp Business API is not connected for this hotel. Please complete Meta Embedded Signup or configure credentials in Settings.',
+        400
+      );
+    }
+    return successResponse(res, result, result.simulated ? 'Simulated message logged' : 'WhatsApp message dispatched');
   } catch (error) {
     next(error);
   }
@@ -988,28 +1156,38 @@ export const handleOAuthCallback = async (req, res) => {
       return res.redirect(`${frontendOrigin}/onboarding?wa_error=No+code+provided`);
     }
 
-    let parsedState = {};
-    if (state) {
-      if (state.includes('.')) {
-        const verified = verifyOAuthState(state);
-        if (verified.valid) {
-          parsedState = verified.data || {};
-        } else {
-          console.warn('[Meta OAuth State Error]:', verified.error);
-        }
+    if (!state) {
+      return res.redirect(`${frontendOrigin}/onboarding?wa_error=Missing+OAuth+state+parameter`);
+    }
+
+    let parsedState = null;
+    if (state.includes('.')) {
+      const verified = verifyOAuthState(state);
+      if (verified && verified.valid && verified.payload) {
+        parsedState = verified.payload;
       } else {
+        const errorMsg = verified?.error || 'Invalid or expired OAuth state';
+        console.warn('[Meta OAuth State Error]:', errorMsg);
+        return res.redirect(`${frontendOrigin}/onboarding?wa_error=${encodeURIComponent(errorMsg)}`);
+      }
+    } else {
+      try {
+        const decodedStr = Buffer.from(state, 'base64').toString('utf-8');
+        parsedState = JSON.parse(decodedStr);
+      } catch (_) {
         try {
-          const decodedStr = Buffer.from(state, 'base64').toString('utf-8');
-          parsedState = JSON.parse(decodedStr);
-        } catch (_) {
-          try {
-            parsedState = JSON.parse(state);
-          } catch (__) {}
+          parsedState = JSON.parse(state);
+        } catch (__) {
+          return res.redirect(`${frontendOrigin}/onboarding?wa_error=Malformed+OAuth+state`);
         }
       }
     }
 
-    const hotelId = parsedState.hotelId || 'hotel-mercier';
+    if (!parsedState || !parsedState.hotelId) {
+      return res.redirect(`${frontendOrigin}/onboarding?wa_error=Missing+hotel+context+in+OAuth+state`);
+    }
+
+    const hotelId = parsedState.hotelId;
     const targetType = parsedState.targetType || 'guest';
     const redirectUri = `${req.protocol}://${req.get('host')}/api/whatsapp/oauth/callback`;
 
