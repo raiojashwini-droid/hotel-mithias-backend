@@ -60,7 +60,7 @@ export const pmsService = {
   /**
    * Connect and validate PMS provider for a specific hotel/tenant
    */
-  async connectPms(hotelId, { provider = 'mews', propertyId }) {
+  async connectPms(hotelId, { provider = 'mews', propertyId, clientToken } = {}) {
     if (!hotelId) {
       const err = new Error('Hotel ID is required for PMS connection');
       err.statusCode = 400;
@@ -84,7 +84,7 @@ export const pmsService = {
 
     // 1. Execute REAL Mews API validation via MewsClient
     const mewsClient = new MewsClient();
-    const enterpriseData = await mewsClient.validateEnterpriseAccess(cleanPropertyId);
+    const enterpriseData = await mewsClient.validateEnterpriseAccess(cleanPropertyId, { clientToken });
 
     // 2. Ensure Hotel record exists in database
     let hotelExists = await prisma.hotel.findUnique({ where: { id: hotelId } }).catch(() => null);
@@ -186,12 +186,12 @@ export const pmsService = {
       throw new Error('Hotel ID is required');
     }
 
-    let hotelExists = await prisma.hotel.findUnique({ where: { id: hotelId } });
-    if (!hotelExists && hotelId === 'hotel-mercier') {
-      hotelExists = await prisma.hotel.findFirst();
+    const hotelExists = await prisma.hotel.findUnique({ where: { id: hotelId } });
+    if (!hotelExists) {
+      throw new Error(`Hotel entity '${hotelId}' not found`);
     }
 
-    const targetHotelId = hotelExists?.id || hotelId;
+    const targetHotelId = hotelExists.id;
 
     await prisma.pmsIntegration.updateMany({
       where: { hotelId: targetHotelId },
@@ -235,10 +235,7 @@ export const pmsService = {
       throw new Error('Hotel ID is required');
     }
 
-    let hotelExists = await prisma.hotel.findUnique({ where: { id: hotelId } });
-    if (!hotelExists && hotelId === 'hotel-mercier') {
-      hotelExists = await prisma.hotel.findFirst();
-    }
+    const hotelExists = await prisma.hotel.findUnique({ where: { id: hotelId } });
 
     if (!hotelExists) {
       return {
@@ -285,10 +282,7 @@ export const pmsService = {
 
     const startTime = Date.now();
 
-    let hotelExists = await prisma.hotel.findUnique({ where: { id: hotelId } });
-    if (!hotelExists && hotelId === 'hotel-mercier') {
-      hotelExists = await prisma.hotel.findFirst();
-    }
+    const hotelExists = await prisma.hotel.findUnique({ where: { id: hotelId } });
 
     if (!hotelExists) {
       throw new Error(`Hotel entity '${hotelId}' not found`);
@@ -682,11 +676,12 @@ export const pmsService = {
    * Check real-time space availability and starting rates
    */
   async checkAvailability(hotelId, { checkIn, checkOut } = {}) {
-    let hotelExists = await prisma.hotel.findUnique({ where: { id: hotelId || 'hotel-mercier' } });
+    if (!hotelId) throw new Error('Hotel ID is required');
+    const hotelExists = await prisma.hotel.findUnique({ where: { id: hotelId } });
     if (!hotelExists) {
-      hotelExists = await prisma.hotel.findFirst();
+      throw new Error(`Hotel entity '${hotelId}' not found`);
     }
-    const targetHotelId = hotelExists?.id || 'hotel-mercier';
+    const targetHotelId = hotelExists.id;
 
     const pms = await prisma.pmsIntegration.findUnique({
       where: { hotelId: targetHotelId },
@@ -976,14 +971,10 @@ export const pmsService = {
    * Fetch synchronized room inventory for hotel
    */
   async getRooms(hotelId) {
-    let hotelExists = await prisma.hotel.findUnique({ where: { id: hotelId || 'hotel-mercier' } });
-    if (!hotelExists) {
-      hotelExists = await prisma.hotel.findFirst();
-    }
-    const targetHotelId = hotelExists?.id || hotelId || 'hotel-mercier';
+    if (!hotelId) throw new Error('Hotel ID is required');
 
     return await prisma.room.findMany({
-      where: { hotelId: targetHotelId },
+      where: { hotelId },
       orderBy: { number: 'asc' },
     });
   },
@@ -992,14 +983,10 @@ export const pmsService = {
    * Fetch synchronized reservations and guest folios for hotel
    */
   async getReservations(hotelId) {
-    let hotelExists = await prisma.hotel.findUnique({ where: { id: hotelId || 'hotel-mercier' } });
-    if (!hotelExists) {
-      hotelExists = await prisma.hotel.findFirst();
-    }
-    const targetHotelId = hotelExists?.id || hotelId || 'hotel-mercier';
+    if (!hotelId) throw new Error('Hotel ID is required');
 
     return await prisma.reservation.findMany({
-      where: { hotelId: targetHotelId },
+      where: { hotelId },
       include: { guest: true },
       orderBy: { arrival: 'asc' },
     });
@@ -1009,11 +996,7 @@ export const pmsService = {
    * Push room status change to database and optionally Mews PMS
    */
   async updateRoomStateInPms(hotelId, roomNumber, status, cleaner, note) {
-    let hotelExists = await prisma.hotel.findUnique({ where: { id: hotelId || 'hotel-mercier' } });
-    if (!hotelExists) {
-      hotelExists = await prisma.hotel.findFirst();
-    }
-    const targetHotelId = hotelExists?.id || hotelId || 'hotel-mercier';
+    if (!hotelId) throw new Error('Hotel ID is required');
 
     const now = new Date();
     const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
@@ -1026,14 +1009,14 @@ export const pmsService = {
     if (note !== undefined) updateData.note = note;
 
     const updated = await prisma.room.update({
-      where: { hotelId_number: { hotelId: targetHotelId, number: String(roomNumber) } },
+      where: { hotelId_number: { hotelId, number: String(roomNumber) } },
       data: updateData,
     });
 
     // Notify Mews Connector API if active connection exists
     try {
       const pms = await prisma.pmsIntegration.findUnique({
-        where: { hotelId: targetHotelId },
+        where: { hotelId },
       });
       if (pms && pms.status === 'connected' && pms.accessTokenEncrypted && updated.mewsId) {
         const mewsStateMap = {
@@ -1053,7 +1036,7 @@ export const pmsService = {
     }
 
     // Broadcast SSE realtime update
-    realtimeService.broadcastToHotel(targetHotelId, 'room:status_changed', {
+    realtimeService.broadcastToHotel(hotelId, 'room:status_changed', {
       number: roomNumber,
       status,
       cleaner: updated.cleaner,
@@ -1067,14 +1050,10 @@ export const pmsService = {
    * Fetch services/products catalog for upsells
    */
   async getServices(hotelId) {
-    let hotelExists = await prisma.hotel.findUnique({ where: { id: hotelId || 'hotel-mercier' } });
-    if (!hotelExists) {
-      hotelExists = await prisma.hotel.findFirst();
-    }
-    const targetHotelId = hotelExists?.id || hotelId || 'hotel-mercier';
+    if (!hotelId) throw new Error('Hotel ID is required');
 
     return await prisma.upsell.findMany({
-      where: { hotelId: targetHotelId },
+      where: { hotelId },
       orderBy: { date: 'desc' },
     });
   },

@@ -450,6 +450,47 @@ export async function evaluateAiPolicy({ hotelId, messageText, guest, intentType
   };
 }
 
+function resolveGuestEmailAddress(conversation, guest) {
+  if (guest?.email) return guest.email;
+  if (guest?.tags) {
+    try {
+      const parsedTags = typeof guest.tags === 'string' ? JSON.parse(guest.tags) : guest.tags;
+      if (Array.isArray(parsedTags)) {
+        const emailTag = parsedTags.find((t) => typeof t === 'string' && t.includes('@'));
+        if (emailTag) return emailTag.trim();
+      }
+    } catch {}
+  }
+  if (conversation?.subject && conversation.subject.includes('@')) {
+    return conversation.subject.trim();
+  }
+  if (guest?.id && guest.id.includes('@')) {
+    const match = guest.id.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+    if (match) return match[0];
+  }
+  return null;
+}
+
+function dispatchOutboundEmail({ channel, conversation, guest, hotelId, conversationId, text }) {
+  if (channel !== 'email') return;
+  const toEmail = resolveGuestEmailAddress(conversation, guest);
+  if (toEmail) {
+    emailService.sendGuestEmail({
+      hotelId,
+      conversationId,
+      toEmail,
+      subject: conversation?.subject || 'Message from Hotel Reception',
+      text,
+      author: 'ai',
+      recordMessage: false,
+    }).catch((err) => {
+      console.warn('[AI Service Outbound Email Warning]:', err.message);
+    });
+  } else {
+    console.warn(`[AI Service] No recipient email found for conversation ${conversationId}, skipping outbound email`);
+  }
+}
+
 /**
  * Process inbound guest message, detect intent and trigger automated actions with RAG
  */
@@ -585,6 +626,15 @@ export async function processGuestMessageAI({
         },
       });
 
+      dispatchOutboundEmail({
+        channel,
+        conversation,
+        guest,
+        hotelId: effectiveHotelId,
+        conversationId,
+        text: aiReplyBody,
+      });
+
       return {
         handled: true,
         requiresApproval: false,
@@ -717,6 +767,15 @@ export async function processGuestMessageAI({
         },
       });
 
+      dispatchOutboundEmail({
+        channel,
+        conversation,
+        guest,
+        hotelId: effectiveHotelId,
+        conversationId,
+        text: aiReplyBody,
+      });
+
       return {
         handled: true,
         requiresApproval: false,
@@ -788,6 +847,15 @@ Write a polite, warm 2-3 sentence response confirming availability, mentioning s
         at: timeStr,
         confidence: 0.99,
       },
+    });
+
+    dispatchOutboundEmail({
+      channel,
+      conversation,
+      guest,
+      hotelId: effectiveHotelId,
+      conversationId,
+      text: aiReplyBody,
     });
 
     return {
@@ -897,23 +965,14 @@ Write a polite, accurate, concise 1-3 sentence response directly answering their
     },
   });
 
-  if (channel === 'email') {
-    const toEmail = conversation.guest?.email || (conversation.subject && conversation.subject.includes('@') ? conversation.subject : null);
-    if (toEmail) {
-      emailService.sendGuestEmail({
-        hotelId: effectiveHotelId,
-        conversationId,
-        toEmail,
-        subject: conversation.subject || 'Message from Hotel Reception',
-        text: replyText,
-        author: 'ai',
-      }).catch((err) => {
-        console.warn('[AI Service Outbound Email Warning]:', err.message);
-      });
-    } else {
-      console.warn(`[AI Service] No recipient email found for conversation ${conversationId}, skipping outbound email`);
-    }
-  }
+  dispatchOutboundEmail({
+    channel,
+    conversation,
+    guest,
+    hotelId: effectiveHotelId,
+    conversationId,
+    text: replyText,
+  });
 
   return {
     handled: true,

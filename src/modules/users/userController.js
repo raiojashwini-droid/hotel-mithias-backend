@@ -12,9 +12,10 @@ const ROLE_DEFAULT_TITLES = {
 
 export const getUsers = async (req, res, next) => {
   try {
-    const hotelId = req.user?.hotelId || 'hotel-mercier';
+    const hotelId = req.user?.hotelId;
+    if (!hotelId) return errorResponse(res, 'Authentication and hotel context required', 401);
 
-    let users = await prisma.user.findMany({
+    const users = await prisma.user.findMany({
       where: { hotelId },
       select: {
         id: true,
@@ -30,35 +31,6 @@ export const getUsers = async (req, res, next) => {
       },
       orderBy: { createdAt: 'asc' },
     });
-
-    // If hotel-mercier has users with null hotelId, associate them
-    if (users.length === 0 && hotelId === 'hotel-mercier') {
-      const existingNulls = await prisma.user.findMany({
-        where: { hotelId: null },
-      });
-      if (existingNulls.length > 0) {
-        await prisma.user.updateMany({
-          where: { hotelId: null },
-          data: { hotelId: 'hotel-mercier' },
-        });
-        users = await prisma.user.findMany({
-          where: { hotelId: 'hotel-mercier' },
-          select: {
-            id: true,
-            name: true,
-            email: true,
-            role: true,
-            title: true,
-            phone: true,
-            initials: true,
-            lastActive: true,
-            whatsapp: true,
-            createdAt: true,
-          },
-          orderBy: { createdAt: 'asc' },
-        });
-      }
-    }
 
     return successResponse(res, users, 'Users retrieved successfully');
   } catch (error) {

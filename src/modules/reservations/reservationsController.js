@@ -3,7 +3,8 @@ import { errorResponse, successResponse } from '../../utils/response.js';
 
 export const getReservationsController = async (req, res) => {
   try {
-    const hotelId = req.user?.hotelId || 'hotel-mercier';
+    const hotelId = req.user?.hotelId;
+    if (!hotelId) return errorResponse(res, 'Authentication and hotel context required', 401);
     const reservations = await reservationsService.getReservations(hotelId);
     return successResponse(res, reservations, 'Reservations retrieved successfully');
   } catch (error) {
@@ -13,7 +14,8 @@ export const getReservationsController = async (req, res) => {
 
 export const getReservationByNumberController = async (req, res) => {
   try {
-    const hotelId = req.user?.hotelId || 'hotel-mercier';
+    const hotelId = req.user?.hotelId;
+    if (!hotelId) return errorResponse(res, 'Authentication and hotel context required', 401);
     const reservation = await reservationsService.getReservationByNumber(hotelId, req.params.number);
     if (!reservation) {
       return errorResponse(res, 'Reservation not found', 404);

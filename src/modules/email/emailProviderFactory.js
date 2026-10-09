@@ -1,5 +1,7 @@
 import { gmailClient } from './gmailClient.js';
 import { microsoftClient } from './microsoftClient.js';
+import { imapClient } from './imapClient.js';
+import { smtpClient } from './smtpClient.js';
 import { prisma } from '../../config/database.js';
 
 /**
@@ -22,6 +24,12 @@ export const emailProviderFactory = {
         name: 'microsoft',
         client: microsoftClient,
         getOAuthUrl: (hotelId, redirectBack, origin) => microsoftClient.getMicrosoftOAuthUrl(hotelId, redirectBack, origin),
+      };
+    } else if (key === 'credentials' || key === 'hostinger') {
+      return {
+        name: 'credentials',
+        imapClient,
+        smtpClient,
       };
     }
     return null;
@@ -51,6 +59,14 @@ export const emailProviderFactory = {
           return await gmailClient.sendGuestGmail(options);
         } else if (providerType === 'microsoft') {
           return await microsoftClient.sendGuestMicrosoftMail(options);
+        } else if (providerType === 'credentials' || providerType === 'hostinger') {
+          return await smtpClient.sendSmtpGuestMail({
+            hotelId,
+            to: options.to || options.toEmail,
+            subject: options.subject,
+            bodyText: options.bodyText || options.text,
+            threadId: options.threadId,
+          });
         } else {
           throw new Error(`Outbound email dispatch not configured for provider '${providerType}'`);
         }
@@ -61,6 +77,8 @@ export const emailProviderFactory = {
           return await gmailClient.fetchRecentGmailMessages(hotelId, maxResults);
         } else if (providerType === 'microsoft') {
           return await microsoftClient.fetchRecentMicrosoftMessages(hotelId, maxResults);
+        } else if (providerType === 'credentials' || providerType === 'hostinger') {
+          return await imapClient.fetchRecentImapMessages(hotelId, maxResults);
         } else {
           return [];
         }
@@ -79,15 +97,33 @@ export const emailProviderFactory = {
           };
         } else if (providerType === 'microsoft') {
           return await microsoftClient.testConnection(hotelId);
+        } else if (providerType === 'credentials' || providerType === 'hostinger') {
+          const { decryptToken } = await import('../../utils/tokenCrypto.js');
+          const pass = decryptToken(integration.accessToken);
+          const result = await imapClient.verifyImapAuth({
+            host: integration.imapHost || `imap.${integration.email.split('@')[1]}`,
+            port: integration.imapPort || 993,
+            username: integration.email,
+            password: pass,
+          });
+          return {
+            success: result.ok,
+            verified: result.ok,
+            provider: 'credentials',
+            email: integration.email,
+            status: result.ok ? 'connected' : 'error',
+            message: result.message || result.error,
+          };
         } else {
           return {
             success: false,
             verified: false,
             provider: providerType,
-            message: 'No supported cloud OAuth provider connected',
+            message: 'No supported email provider connected',
           };
         }
       },
     };
   },
 };
+

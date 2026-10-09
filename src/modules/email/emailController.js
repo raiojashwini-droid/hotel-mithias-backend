@@ -1,10 +1,12 @@
 import { emailService } from './emailService.js';
 import { gmailClient } from './gmailClient.js';
 import { microsoftClient } from './microsoftClient.js';
+import { imapClient } from './imapClient.js';
 import { verifyImapConnection } from '../../utils/imapVerifier.js';
 import { prisma } from '../../config/database.js';
 import { errorResponse, successResponse } from '../../utils/response.js';
 import { encryptToken, verifyOAuthState } from '../../utils/tokenCrypto.js';
+import { verifyToken } from '../../utils/jwt.js';
 
 function getFrontendBaseUrl(req) {
   const allowedFrontends = (process.env.FRONTEND_URL || 'http://localhost:3000,http://localhost:5173,https://hotel-pms-mithiias.netlify.app')
@@ -28,7 +30,22 @@ function getFrontendBaseUrl(req) {
  */
 export const initiateGoogleOAuthController = async (req, res) => {
   try {
-    const hotelId = req.user?.hotelId || req.query.hotelId || req.headers['x-hotel-id'] || 'hotel-mercier';
+    let hotelId = req.user?.hotelId || req.query.hotelId || req.headers['x-hotel-id'];
+    if (!hotelId && req.headers.authorization?.startsWith('Bearer ')) {
+      try {
+        const decoded = verifyToken(req.headers.authorization.split(' ')[1]);
+        if (decoded?.hotelId) hotelId = decoded.hotelId;
+      } catch (_) {}
+    }
+    if (!hotelId && req.query.token) {
+      try {
+        const decoded = verifyToken(req.query.token);
+        if (decoded?.hotelId) hotelId = decoded.hotelId;
+      } catch (_) {}
+    }
+    if (!hotelId) {
+      return errorResponse(res, 'Authentication and hotel context required', 401);
+    }
     const redirectBack = req.query.redirectBack || '/onboarding';
 
     const callerFrontend = getFrontendBaseUrl(req);
@@ -173,12 +190,15 @@ export const googleOAuthCallbackController = async (req, res) => {
  */
 export const testConnectionController = async (req, res) => {
   try {
-    const hotelId = req.user?.hotelId || req.headers['x-hotel-id'] || req.body?.hotelId || 'hotel-mercier';
+    const hotelId = req.user?.hotelId || req.headers['x-hotel-id'] || req.body?.hotelId;
+    if (!hotelId) {
+      return errorResponse(res, 'Authentication and tenant context required', 401);
+    }
     const { email, address, password, host, port, method, settings } = req.body;
 
-    const targetEmail = address || email;
-    const targetHost = settings?.imapHost || host;
-    const targetPort = settings?.imapPort || port || 993;
+    const targetEmail = (address || email || '').trim();
+    const targetHost = (settings?.imapHost || host || '').trim();
+    const targetPort = Number(settings?.imapPort || port || 993);
     const targetSecurity = settings?.imapSecurity || 'SSL/TLS';
     const targetMethod = method || (settings ? 'manual' : 'credentials');
 
@@ -195,8 +215,21 @@ export const testConnectionController = async (req, res) => {
         method: 'oauth',
         message: 'OAuth provider verified and ready for sign-in',
       };
+    } else if (password && targetHost) {
+      // Genuine remote IMAP authentication verification using ImapFlow
+      verificationResult = await imapClient.verifyImapAuth({
+        host: targetHost,
+        port: targetPort,
+        username: targetEmail,
+        password,
+        secure: targetPort === 993 || targetSecurity === 'SSL/TLS',
+      });
+
+      if (!verificationResult.ok) {
+        return errorResponse(res, verificationResult.error || 'Mailbox authentication failed', 400);
+      }
     } else if (targetHost) {
-      // Execute live TCP TLS socket verification
+      // Live TCP TLS socket verification if password not yet provided
       verificationResult = await verifyImapConnection({
         host: targetHost,
         port: targetPort,
@@ -219,13 +252,9 @@ export const testConnectionController = async (req, res) => {
       });
     }
 
-    // Persist dynamic email configuration to MySQL for this tenant hotelId
+    // Persist dynamic email configuration and encrypted credentials to MySQL for this tenant hotelId
     try {
-      let hotel = await prisma.hotel.findUnique({ where: { id: hotelId } });
-      if (!hotel && hotelId === 'hotel-mercier') {
-        hotel = await prisma.hotel.findFirst();
-      }
-
+      const hotel = await prisma.hotel.findUnique({ where: { id: hotelId } });
       if (hotel) {
         let stepsDone = ['profile'];
         if (hotel.onboardingSteps) {
@@ -244,6 +273,40 @@ export const testConnectionController = async (req, res) => {
           data: {
             email: targetEmail,
             onboardingSteps: JSON.stringify(stepsDone),
+          },
+        });
+
+        // Determine IMAP and SMTP configurations
+        const cleanHost = targetHost || (targetEmail.includes('@') ? `imap.${targetEmail.split('@')[1]}` : null);
+        const isHostingerOrTitan = cleanHost?.includes('hostinger') || cleanHost?.includes('titan') || targetEmail.includes('titan');
+        const provider = isHostingerOrTitan ? 'hostinger' : (targetMethod === 'oauth' ? 'google' : 'credentials');
+        const smtpHost = settings?.smtpHost || (cleanHost ? cleanHost.replace('imap.', 'smtp.') : null);
+        const smtpPort = Number(settings?.smtpPort) || 465;
+        const encryptedPass = password ? encryptToken(password) : null;
+
+        await prisma.emailIntegration.upsert({
+          where: { hotelId },
+          update: {
+            email: targetEmail,
+            provider,
+            imapHost: cleanHost,
+            imapPort: targetPort || 993,
+            smtpHost,
+            smtpPort,
+            ...(encryptedPass ? { accessToken: encryptedPass } : {}),
+            status: 'connected',
+            lastError: null,
+          },
+          create: {
+            hotelId,
+            email: targetEmail,
+            provider,
+            imapHost: cleanHost,
+            imapPort: targetPort || 993,
+            smtpHost,
+            smtpPort,
+            accessToken: encryptedPass,
+            status: 'connected',
           },
         });
 
@@ -267,7 +330,7 @@ export const testConnectionController = async (req, res) => {
       address: targetEmail,
       hotelId,
       state: 'connected',
-    }, 'Mail server handshake and database persistence successful');
+    }, 'Mailbox credentials verified and integration persisted successfully');
   } catch (error) {
     return errorResponse(res, error.message, 400);
   }
@@ -279,7 +342,32 @@ export const testConnectionController = async (req, res) => {
  */
 export const inboundEmailController = async (req, res) => {
   try {
-    const hotelId = req.headers['x-hotel-id'] || req.query.hotelId || req.body?.hotelId || req.user?.hotelId || 'hotel-mercier';
+    let hotelId = req.headers['x-hotel-id'] || req.query.hotelId || req.body?.hotelId || req.user?.hotelId;
+    if (!hotelId) {
+      // Resolve by recipient email
+      const toEmail = req.body?.to || req.body?.toEmail || req.body?.recipient;
+      if (toEmail) {
+        const cleanTo = String(toEmail).trim().toLowerCase();
+        const integration = await prisma.emailIntegration.findFirst({
+          where: { email: cleanTo },
+        });
+        if (integration) {
+          hotelId = integration.hotelId;
+        } else {
+          const hotel = await prisma.hotel.findFirst({
+            where: { email: cleanTo },
+          });
+          if (hotel) {
+            hotelId = hotel.id;
+          }
+        }
+      }
+    }
+
+    if (!hotelId) {
+      return errorResponse(res, 'Tenant hotel context could not be resolved for inbound email', 400);
+    }
+
     const result = await emailService.processInboundEmail({ ...req.body, hotelId });
     return successResponse(res, result, 'Inbound email processed and attached to conversation');
   } catch (error) {
@@ -294,14 +382,19 @@ export const inboundEmailController = async (req, res) => {
  */
 export const sendEmailController = async (req, res) => {
   try {
-    const hotelId = req.user?.hotelId || req.body?.hotelId || 'hotel-mercier';
-    const { conversationId, toEmail, subject, text, author, threadId } = req.body;
+    const hotelId = req.user?.hotelId || req.body?.hotelId;
+    if (!hotelId) {
+      return errorResponse(res, 'Authentication and tenant context required', 401);
+    }
+    const { conversationId, toEmail, recipientEmail, to, subject, text, bodyText, body, author, threadId } = req.body;
+    const targetTo = toEmail || recipientEmail || to;
+    const targetText = text || bodyText || body;
     const result = await emailService.sendGuestEmail({
       hotelId,
       conversationId,
-      toEmail,
+      toEmail: targetTo,
       subject,
-      text,
+      text: targetText,
       author,
       threadId,
     });
@@ -317,7 +410,10 @@ export const sendEmailController = async (req, res) => {
  */
 export const syncGmailController = async (req, res) => {
   try {
-    const hotelId = req.user?.hotelId || req.headers['x-hotel-id'] || req.body?.hotelId || 'hotel-mercier';
+    const hotelId = req.user?.hotelId || req.headers['x-hotel-id'] || req.body?.hotelId;
+    if (!hotelId) {
+      return errorResponse(res, 'Authentication and tenant context required', 401);
+    }
     const result = await emailService.syncHotelGmailInbox(hotelId, req.body?.maxResults || 10);
     return successResponse(res, result, 'Gmail inbox synced successfully');
   } catch (error) {
@@ -331,7 +427,22 @@ export const syncGmailController = async (req, res) => {
  */
 export const initiateMicrosoftOAuthController = async (req, res) => {
   try {
-    const hotelId = req.user?.hotelId || req.query.hotelId || req.headers['x-hotel-id'] || 'hotel-mercier';
+    let hotelId = req.user?.hotelId || req.query.hotelId || req.headers['x-hotel-id'];
+    if (!hotelId && req.headers.authorization?.startsWith('Bearer ')) {
+      try {
+        const decoded = verifyToken(req.headers.authorization.split(' ')[1]);
+        if (decoded?.hotelId) hotelId = decoded.hotelId;
+      } catch (_) {}
+    }
+    if (!hotelId && req.query.token) {
+      try {
+        const decoded = verifyToken(req.query.token);
+        if (decoded?.hotelId) hotelId = decoded.hotelId;
+      } catch (_) {}
+    }
+    if (!hotelId) {
+      return errorResponse(res, 'Authentication and hotel context required', 401);
+    }
     const redirectBack = req.query.redirectBack || '/onboarding';
 
     const callerFrontend = getFrontendBaseUrl(req);
@@ -478,7 +589,10 @@ export const microsoftOAuthCallbackController = async (req, res) => {
  */
 export const syncMicrosoftController = async (req, res) => {
   try {
-    const hotelId = req.user?.hotelId || req.headers['x-hotel-id'] || req.body?.hotelId || 'hotel-mercier';
+    const hotelId = req.user?.hotelId || req.headers['x-hotel-id'] || req.body?.hotelId;
+    if (!hotelId) {
+      return errorResponse(res, 'Authentication and tenant context required', 401);
+    }
     const maxResults = parseInt(req.body?.maxResults, 10) || 10;
     const result = await emailService.syncHotelMicrosoftInbox(hotelId, maxResults);
     return successResponse(res, result, 'Microsoft inbox synced successfully');
@@ -493,7 +607,10 @@ export const syncMicrosoftController = async (req, res) => {
  */
 export const testMicrosoftConnectionController = async (req, res) => {
   try {
-    const hotelId = req.user?.hotelId || req.headers['x-hotel-id'] || req.body?.hotelId || 'hotel-mercier';
+    const hotelId = req.user?.hotelId || req.headers['x-hotel-id'] || req.body?.hotelId;
+    if (!hotelId) {
+      return errorResponse(res, 'Authentication and tenant context required', 401);
+    }
     const result = await microsoftClient.testConnection(hotelId);
     if (!result.ok) {
       return errorResponse(res, result.error || 'Microsoft connection test failed', 400);

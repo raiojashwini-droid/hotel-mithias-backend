@@ -140,21 +140,32 @@ export const emailService = {
       throw new Error('Inbound email must have a valid sender address');
     }
 
-    let hotel = await prisma.hotel.findUnique({ where: { id: hotelId } });
-    if (!hotel && hotelId === 'hotel-mercier') {
-      hotel = await prisma.hotel.findFirst();
+    if (!hotelId) {
+      throw new Error('Tenant hotel context is required for inbound email');
     }
-    const targetHotelId = hotel?.id || 'hotel-mercier';
+
+    const hotel = await prisma.hotel.findUnique({ where: { id: hotelId } });
+    if (!hotel) {
+      throw new Error(`Hotel entity '${hotelId}' not found`);
+    }
+    const targetHotelId = hotel.id;
     const timeStr = new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
 
     // 1. Reuse extractRoomNumber to dynamically extract room from email subject / body
     const { extractRoomNumber, processGuestMessageAI } = await import('../conversations/aiService.js');
     const detectedRoom = extractRoomNumber(`${subject} ${textBody}`);
 
-    // 2. Locate or create guest deterministically by email
-    const guestId = `gst_em_${fromEmail.toLowerCase().replace(/[^a-zA-Z0-9]/g, '_')}`;
-    let guest = await prisma.guest.findUnique({
-      where: { id: guestId },
+    // 2. Locate or create guest deterministically by email scoped to tenant hotel
+    const cleanFrom = fromEmail.toLowerCase().replace(/[^a-zA-Z0-9]/g, '_');
+    const guestId = `gst_${targetHotelId}_${cleanFrom}`;
+    let guest = await prisma.guest.findFirst({
+      where: {
+        hotelId: targetHotelId,
+        OR: [
+          { id: guestId },
+          { tags: { contains: fromEmail } },
+        ],
+      },
       include: { reservations: true },
     });
 
@@ -272,8 +283,18 @@ export const emailService = {
       });
     }
 
-    // 5. Append message to conversation
+    // 5. Append message to conversation with duplicate prevention
     const msgId = payload.messageId || payload.id || `m-${Date.now()}`;
+    const existingMsg = await prisma.message.findUnique({ where: { id: msgId } });
+    if (existingMsg) {
+      return {
+        success: true,
+        duplicate: true,
+        messageId: msgId,
+        conversationId: existingMsg.conversationId,
+      };
+    }
+
     const messageRecord = await prisma.message.create({
       data: {
         id: msgId,
@@ -427,10 +448,13 @@ export const emailService = {
   },
 
   /**
-   * Send outbound email reply to guest via the hotel's authenticated Gmail account.
+   * Send outbound email reply to guest via the hotel's authenticated account (Gmail, Microsoft, or SMTP).
    * Brevo has been completely removed from guest messaging.
    */
-  async sendGuestEmail({ hotelId = 'hotel-mercier', conversationId, toEmail, subject, text, author = 'staff', threadId }) {
+  async sendGuestEmail({ hotelId, conversationId, toEmail, subject, text, author = 'staff', threadId }) {
+    if (!hotelId) {
+      throw new Error('hotelId is required to send guest email');
+    }
     if (!toEmail || !text) {
       throw new Error('Recipient email and message text are required');
     }
@@ -439,7 +463,7 @@ export const emailService = {
     let dispatched = false;
     let sendResult = null;
 
-    // Check if hotel has an active cloud email OAuth connection (Google or Microsoft)
+    // Check if hotel has an active email connection (Google, Microsoft, or SMTP credentials)
     try {
       const integration = await prisma.emailIntegration.findUnique({
         where: { hotelId },
@@ -464,8 +488,18 @@ export const emailService = {
           messageId: threadId,
         });
         dispatched = Boolean(sendResult?.success);
+      } else if ((integration?.provider === 'credentials' || integration?.provider === 'hostinger') && integration?.accessToken) {
+        const { smtpClient } = await import('./smtpClient.js');
+        sendResult = await smtpClient.sendSmtpGuestMail({
+          hotelId,
+          to: toEmail,
+          subject: subject || 'Message from Hotel Reception',
+          bodyText: text,
+          threadId,
+        });
+        dispatched = Boolean(sendResult?.success);
       } else {
-        // Fallback for demo/unconfigured hotels without cloud credentials
+        // Fallback for demo/unconfigured hotels without credentials
         console.log(`[Email Service Fallback] Dispatched reply to ${toEmail} (hotel: ${hotelId}): "${text.slice(0, 60)}"`);
         dispatched = true;
       }
@@ -620,9 +654,62 @@ export const emailService = {
   },
 
   /**
-   * Unified cloud inbox synchronization dynamically routing to Gmail or Microsoft 365
+   * Synchronize incoming guest emails from the hotel's authenticated IMAP (Hostinger/Titan) inbox
    */
-  async syncHotelInbox(hotelId = 'hotel-mercier', maxResults = 10) {
+  async syncHotelImapInbox(hotelId, maxResults = 10) {
+    if (!hotelId) {
+      throw new Error('hotelId is required for IMAP sync');
+    }
+
+    const { imapClient } = await import('./imapClient.js');
+    const messages = await imapClient.fetchRecentImapMessages(hotelId, maxResults);
+    const processed = [];
+
+    for (const msg of messages) {
+      try {
+        const exists = await prisma.message.findFirst({
+          where: {
+            OR: [
+              { id: msg.id },
+              { body: msg.bodyText, channel: 'email' },
+            ],
+          },
+        });
+
+        if (!exists) {
+          const result = await this.processInboundEmail({
+            messageId: msg.id,
+            from: msg.from,
+            to: msg.to,
+            subject: msg.subject,
+            text: msg.bodyText,
+            hotelId,
+          });
+          processed.push(result);
+        }
+      } catch (procErr) {
+        console.warn(`[IMAP Sync Ingestion Warning]:`, procErr.message);
+      }
+    }
+
+    await prisma.emailIntegration.update({
+      where: { hotelId },
+      data: { lastSyncAt: new Date() },
+    }).catch(() => {});
+
+    return {
+      success: true,
+      provider: 'credentials',
+      count: processed.length,
+      syncedAt: new Date().toISOString(),
+      messages: processed,
+    };
+  },
+
+  /**
+   * Unified cloud inbox synchronization dynamically routing to Gmail, Microsoft 365, or Hostinger IMAP
+   */
+  async syncHotelInbox(hotelId, maxResults = 10) {
     if (!hotelId) {
       throw new Error('hotelId is required for inbox sync');
     }
@@ -633,6 +720,8 @@ export const emailService = {
 
     if (integration?.provider === 'microsoft') {
       return await this.syncHotelMicrosoftInbox(hotelId, maxResults);
+    } else if (integration?.provider === 'credentials' || integration?.provider === 'hostinger') {
+      return await this.syncHotelImapInbox(hotelId, maxResults);
     }
 
     return await this.syncHotelGmailInbox(hotelId, maxResults);

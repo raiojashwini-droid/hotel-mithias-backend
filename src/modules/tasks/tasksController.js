@@ -3,7 +3,8 @@ import { errorResponse, successResponse } from '../../utils/response.js';
 
 export const getTasks = async (req, res, next) => {
   try {
-    const hotelId = req.user?.hotelId || 'hotel-mercier';
+    const hotelId = req.user?.hotelId;
+    if (!hotelId) return errorResponse(res, 'Authentication and hotel context required', 401);
     const { department, status, source } = req.query;
     const where = { hotelId };
 
@@ -28,7 +29,8 @@ export const getTasks = async (req, res, next) => {
 
 export const getTaskById = async (req, res, next) => {
   try {
-    const hotelId = req.user?.hotelId || 'hotel-mercier';
+    const hotelId = req.user?.hotelId;
+    if (!hotelId) return errorResponse(res, 'Authentication and hotel context required', 401);
     const { id } = req.params;
     const task = await prisma.task.findFirst({
       where: { id, hotelId },
@@ -45,7 +47,8 @@ export const getTaskById = async (req, res, next) => {
 
 export const createTask = async (req, res, next) => {
   try {
-    const hotelId = req.user?.hotelId || 'hotel-mercier';
+    const hotelId = req.user?.hotelId;
+    if (!hotelId) return errorResponse(res, 'Authentication and hotel context required', 401);
     const {
       title,
       detail,
@@ -67,6 +70,11 @@ export const createTask = async (req, res, next) => {
     const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
     const id = `t-${Date.now()}`;
 
+    const normalizedPriority = priority
+      ? priority.charAt(0).toUpperCase() + priority.slice(1).toLowerCase()
+      : 'Normal';
+    const creatorName = req.user?.name || source || 'Manager';
+
     const task = await prisma.task.create({
       data: {
         id,
@@ -76,7 +84,7 @@ export const createTask = async (req, res, next) => {
         room,
         guest,
         department,
-        priority,
+        priority: normalizedPriority,
         createdAt: timeStr,
         due,
         assignee,
@@ -87,7 +95,7 @@ export const createTask = async (req, res, next) => {
           create: [
             {
               at: timeStr,
-              text: `Task created via ${source}${assignee ? ` and assigned to ${assignee}` : ''}`,
+              text: `Task created by ${creatorName} via ${source}${assignee ? ` and assigned to ${assignee}` : ''}`,
               via: 'dashboard',
             },
           ],
@@ -116,7 +124,8 @@ export const createTask = async (req, res, next) => {
 
 export const updateTaskStatus = async (req, res, next) => {
   try {
-    const hotelId = req.user?.hotelId || 'hotel-mercier';
+    const hotelId = req.user?.hotelId;
+    if (!hotelId) return errorResponse(res, 'Authentication and hotel context required', 401);
     const { id } = req.params;
     const { status, note, via = 'dashboard', assignee } = req.body;
 

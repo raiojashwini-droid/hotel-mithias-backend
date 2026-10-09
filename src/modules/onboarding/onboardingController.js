@@ -2,6 +2,7 @@ import bcrypt from 'bcryptjs';
 import { prisma } from '../../config/database.js';
 import { errorResponse, successResponse } from '../../utils/response.js';
 import { sendBrevoInvitationEmail } from '../../utils/mailer.js';
+import { encryptToken } from '../../utils/tokenCrypto.js';
 
 let columnsChecked = false;
 let waColumnsChecked = false;
@@ -53,12 +54,11 @@ export async function ensureWhatsAppColumns() {
 export const getOnboardingStatus = async (req, res, next) => {
   try {
     await ensureHotelColumns();
-    const hotelId = req.user?.hotelId || 'hotel-mercier';
+    const hotelId = req.user?.hotelId;
+    if (!hotelId) return errorResponse(res, 'Authentication and hotel context required', 401);
 
-    let hotel = await prisma.hotel.findUnique({ where: { id: hotelId } });
-    if (!hotel && !req.user?.hotelId && hotelId === 'hotel-mercier') {
-      hotel = await prisma.hotel.findFirst();
-    }
+    const hotel = await prisma.hotel.findUnique({ where: { id: hotelId } });
+    if (!hotel) return errorResponse(res, 'Hotel entity not found', 404);
 
     let stepsDone = ['profile'];
     if (hotel?.onboardingSteps) {
@@ -69,7 +69,7 @@ export const getOnboardingStatus = async (req, res, next) => {
       }
     }
 
-    const targetHotelId = hotel?.id || hotelId;
+    const targetHotelId = hotel.id;
 
     // Check real active integrations from database
     const [pmsInteg, emailInteg, waIntegs] = await Promise.all([
@@ -144,7 +144,7 @@ export const getOnboardingStatus = async (req, res, next) => {
     };
 
     return successResponse(res, {
-      hotelId,
+      hotelId: targetHotelId,
       waTopology: hotel?.waTopology || 'separate',
       complete: Boolean(hotel?.onboardingDone),
       done: doneMap,
@@ -158,12 +158,11 @@ export const getOnboardingStatus = async (req, res, next) => {
 export const getHotelProfile = async (req, res, next) => {
   try {
     await ensureHotelColumns();
-    const hotelId = req.user?.hotelId || 'hotel-mercier';
+    const hotelId = req.user?.hotelId;
+    if (!hotelId) return errorResponse(res, 'Authentication and hotel context required', 401);
 
-    let hotel = await prisma.hotel.findUnique({ where: { id: hotelId } });
-    if (!hotel && hotelId === 'hotel-mercier') {
-      hotel = await prisma.hotel.findFirst();
-    }
+    const hotel = await prisma.hotel.findUnique({ where: { id: hotelId } });
+    if (!hotel) return errorResponse(res, 'Hotel entity not found', 404);
 
     const profile = {
       name: hotel?.name || 'My Hotel',
@@ -194,19 +193,16 @@ export const getHotelProfile = async (req, res, next) => {
 export const saveHotelProfile = async (req, res, next) => {
   try {
     await ensureHotelColumns();
-    const hotelId = req.user?.hotelId || 'hotel-mercier';
+    const hotelId = req.user?.hotelId;
+    if (!hotelId) return errorResponse(res, 'Authentication and hotel context required', 401);
 
     const data = req.body;
     if (!data) {
       return errorResponse(res, 'Profile data required', 400);
     }
 
-    let hotel = await prisma.hotel.findUnique({ where: { id: hotelId } });
-    if (!hotel && !req.user?.hotelId && hotelId === 'hotel-mercier') {
-      hotel = await prisma.hotel.findFirst();
-    }
-
-    const targetHotelId = hotel?.id || hotelId;
+    const hotel = await prisma.hotel.findUnique({ where: { id: hotelId } });
+    const targetHotelId = hotelId;
 
     let stepsDone = ['profile'];
     if (hotel?.onboardingSteps) {
@@ -280,7 +276,8 @@ export const saveHotelProfile = async (req, res, next) => {
 export const saveTopology = async (req, res, next) => {
   try {
     await ensureHotelColumns();
-    const hotelId = req.user?.hotelId || 'hotel-mercier';
+    const hotelId = req.user?.hotelId;
+    if (!hotelId) return errorResponse(res, 'Authentication and hotel context required', 401);
     const { topology } = req.body;
 
     if (!topology) {
@@ -301,17 +298,15 @@ export const saveTopology = async (req, res, next) => {
 export const saveOnboardingStep = async (req, res, next) => {
   try {
     await ensureHotelColumns();
-    const hotelId = req.user?.hotelId || 'hotel-mercier';
+    const hotelId = req.user?.hotelId;
+    if (!hotelId) return errorResponse(res, 'Authentication and hotel context required', 401);
     const { stepKey, data } = req.body;
 
     if (!stepKey) {
       return errorResponse(res, 'Step key is required', 400);
     }
 
-    let hotel = await prisma.hotel.findUnique({ where: { id: hotelId } });
-    if (!hotel && hotelId === 'hotel-mercier') {
-      hotel = await prisma.hotel.findFirst();
-    }
+    const hotel = await prisma.hotel.findUnique({ where: { id: hotelId } });
 
     let stepsDone = ['profile'];
     if (hotel?.onboardingSteps) {
@@ -338,9 +333,9 @@ export const saveOnboardingStep = async (req, res, next) => {
     const stateField = stepFieldMap[stepKey];
     if (stateField) {
       prisma.onboardingState.upsert({
-        where: { hotelId: hotel?.id || hotelId },
+        where: { hotelId },
         update: { [stateField]: true },
-        create: { hotelId: hotel?.id || hotelId, [stateField]: true },
+        create: { hotelId, [stateField]: true },
       }).catch(() => {});
     }
 
@@ -348,8 +343,46 @@ export const saveOnboardingStep = async (req, res, next) => {
       onboardingSteps: JSON.stringify(stepsDone),
     };
 
-    if (stepKey === 'email' && data?.address) {
-      updateData.email = data.address;
+    if (stepKey === 'email' && (data?.address || data?.email)) {
+      const emailAddr = (data?.address || data?.email || '').trim();
+      updateData.email = emailAddr;
+
+      // Also persist to EmailIntegration with encryption
+      const password = data?.password;
+      const settings = data?.settings;
+      const host = (settings?.imapHost || (emailAddr.includes('@') ? `imap.${emailAddr.split('@')[1]}` : '')).trim();
+      const port = Number(settings?.imapPort) || 993;
+      const smtpHost = (settings?.smtpHost || (host ? host.replace('imap.', 'smtp.') : '')).trim();
+      const smtpPort = Number(settings?.smtpPort) || 465;
+      const isHostinger = host.includes('hostinger') || host.includes('titan') || emailAddr.includes('titan');
+      const provider = isHostinger ? 'hostinger' : (data?.method === 'oauth' ? 'google' : 'credentials');
+      const encryptedToken = password ? encryptToken(password) : null;
+
+      prisma.emailIntegration.upsert({
+        where: { hotelId },
+        update: {
+          email: emailAddr,
+          provider,
+          imapHost: host || null,
+          imapPort: port,
+          smtpHost: smtpHost || null,
+          smtpPort,
+          ...(encryptedToken ? { accessToken: encryptedToken } : {}),
+          status: 'connected',
+          lastError: null,
+        },
+        create: {
+          hotelId,
+          email: emailAddr,
+          provider,
+          imapHost: host || null,
+          imapPort: port,
+          smtpHost: smtpHost || null,
+          smtpPort,
+          accessToken: encryptedToken,
+          status: 'connected',
+        },
+      }).catch((err) => console.warn('[Onboarding EmailIntegration Upsert Warning]:', err.message));
     }
 
     if (stepKey === 'wa-guest' && (data?.phone || data?.displayPhoneNumber)) {
@@ -592,12 +625,11 @@ export const saveOnboardingStep = async (req, res, next) => {
 export const completeOnboarding = async (req, res, next) => {
   try {
     await ensureHotelColumns();
-    const hotelId = req.user?.hotelId || 'hotel-mercier';
+    const hotelId = req.user?.hotelId;
+    if (!hotelId) return errorResponse(res, 'Authentication and hotel context required', 401);
 
-    let hotel = await prisma.hotel.findUnique({ where: { id: hotelId } });
-    if (!hotel && hotelId === 'hotel-mercier') {
-      hotel = await prisma.hotel.findFirst();
-    }
+    const hotel = await prisma.hotel.findUnique({ where: { id: hotelId } });
+    if (!hotel) return errorResponse(res, 'Hotel entity not found', 404);
 
     if (hotel) {
       await prisma.hotel.update({

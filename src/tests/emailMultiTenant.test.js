@@ -4,12 +4,16 @@ import http from 'node:http';
 import app from '../app.js';
 import { prisma } from '../config/database.js';
 import { verifyImapConnection } from '../utils/imapVerifier.js';
+import { signToken } from '../utils/jwt.js';
+
+process.env.NODE_ENV = 'test';
 
 describe('Multi-Tenant Dynamic Guest Email & IMAP Handshake Suite', () => {
   let server;
   let baseUrl;
   const tenantA = 'tenant-hotel-alpha';
   const tenantB = 'tenant-hotel-beta';
+  let tokenA;
 
   before(async () => {
     server = http.createServer(app);
@@ -32,6 +36,7 @@ describe('Multi-Tenant Dynamic Guest Email & IMAP Handshake Suite', () => {
       },
     });
     await prisma.guest.deleteMany({ where: { hotelId: { in: [tenantA, tenantB] } } });
+    await prisma.user.deleteMany({ where: { hotelId: { in: [tenantA, tenantB] } } });
     await prisma.hotel.deleteMany({ where: { id: { in: [tenantA, tenantB] } } });
 
     // Seed Tenant A
@@ -75,6 +80,19 @@ describe('Multi-Tenant Dynamic Guest Email & IMAP Handshake Suite', () => {
         onboardingDone: true,
       },
     });
+
+    await prisma.user.create({
+      data: {
+        id: 'u-alpha',
+        name: 'Alpha Manager',
+        email: 'manager@hotelalpha.be',
+        passwordHash: 'hash',
+        role: 'manager',
+        hotelId: tenantA,
+      },
+    });
+
+    tokenA = signToken({ id: 'u-alpha', email: 'manager@hotelalpha.be', role: 'manager', hotelId: tenantA });
   });
 
   after(async () => {
@@ -92,6 +110,7 @@ describe('Multi-Tenant Dynamic Guest Email & IMAP Handshake Suite', () => {
       },
     });
     await prisma.guest.deleteMany({ where: { hotelId: { in: [tenantA, tenantB] } } });
+    await prisma.user.deleteMany({ where: { hotelId: { in: [tenantA, tenantB] } } });
     await prisma.hotel.deleteMany({ where: { id: { in: [tenantA, tenantB] } } });
     await new Promise((resolve) => server.close(resolve));
   });
@@ -112,6 +131,7 @@ describe('Multi-Tenant Dynamic Guest Email & IMAP Handshake Suite', () => {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'Authorization': `Bearer ${tokenA}`,
         'x-hotel-id': tenantA,
       },
       body: JSON.stringify({

@@ -3,9 +3,20 @@ import { errorResponse, successResponse } from '../../utils/response.js';
 import { emailService } from '../email/emailService.js';
 import { sendMetaWhatsAppMessage } from '../whatsapp/whatsappController.js';
 
+const safeJsonParse = (val, fallback = []) => {
+  if (!val) return fallback;
+  if (typeof val !== 'string') return val;
+  try {
+    return JSON.parse(val);
+  } catch {
+    return fallback;
+  }
+};
+
 export const getConversations = async (req, res, next) => {
   try {
-    const hotelId = req.user?.hotelId || 'hotel-mercier';
+    const hotelId = req.user?.hotelId;
+    if (!hotelId) return errorResponse(res, 'Authentication and hotel context required', 401);
     const { channel, stage, aiStatus } = req.query;
     const where = {
       guest: { hotelId },
@@ -50,25 +61,18 @@ export const getConversations = async (req, res, next) => {
       return {
         ...c,
         channels: c.primaryChannel ? [c.primaryChannel] : ['whatsapp'],
-        knowledgeUsed: JSON.parse(c.knowledgeUsed || '[]'),
-        upsellIdeas: JSON.parse(c.upsellIdeas || '[]'),
-        escalation: (() => {
-          if (!c.escalation) return undefined;
-          try {
-            return JSON.parse(c.escalation);
-          } catch {
-            return undefined;
-          }
-        })(),
+        knowledgeUsed: safeJsonParse(c.knowledgeUsed, []),
+        upsellIdeas: safeJsonParse(c.upsellIdeas, []),
+        escalation: safeJsonParse(c.escalation, undefined),
         guest: {
           ...c.guest,
-          tags: JSON.parse(c.guest?.tags || '[]'),
+          tags: safeJsonParse(c.guest?.tags, []),
           reservation: resObj,
         },
         messages: (c.messages || []).map((m) => ({
           ...m,
-          knowledge: JSON.parse(m.knowledge || '[]'),
-          buttons: JSON.parse(m.buttons || '[]'),
+          knowledge: safeJsonParse(m.knowledge, []),
+          buttons: safeJsonParse(m.buttons, []),
         })),
       };
     });
@@ -81,7 +85,8 @@ export const getConversations = async (req, res, next) => {
 
 export const getConversationById = async (req, res, next) => {
   try {
-    const hotelId = req.user?.hotelId || 'hotel-mercier';
+    const hotelId = req.user?.hotelId;
+    if (!hotelId) return errorResponse(res, 'Authentication and hotel context required', 401);
     const { id } = req.params;
     const conversation = await prisma.conversation.findFirst({
       where: {
@@ -122,26 +127,19 @@ export const getConversationById = async (req, res, next) => {
     const parsed = {
       ...conversation,
       channels: conversation.primaryChannel ? [conversation.primaryChannel] : ['whatsapp'],
-      knowledgeUsed: JSON.parse(conversation.knowledgeUsed || '[]'),
-      upsellIdeas: JSON.parse(conversation.upsellIdeas || '[]'),
-      taskIds: JSON.parse(conversation.taskIds || '[]'),
-      escalation: (() => {
-        if (!conversation.escalation) return undefined;
-        try {
-          return JSON.parse(conversation.escalation);
-        } catch {
-          return undefined;
-        }
-      })(),
+      knowledgeUsed: safeJsonParse(conversation.knowledgeUsed, []),
+      upsellIdeas: safeJsonParse(conversation.upsellIdeas, []),
+      taskIds: safeJsonParse(conversation.taskIds, []),
+      escalation: safeJsonParse(conversation.escalation, undefined),
       guest: {
         ...conversation.guest,
-        tags: JSON.parse(conversation.guest?.tags || '[]'),
+        tags: safeJsonParse(conversation.guest?.tags, []),
         reservation: resObj,
       },
       messages: (conversation.messages || []).map((m) => ({
         ...m,
-        knowledge: JSON.parse(m.knowledge || '[]'),
-        buttons: JSON.parse(m.buttons || '[]'),
+        knowledge: safeJsonParse(m.knowledge, []),
+        buttons: safeJsonParse(m.buttons, []),
       })),
     };
 
@@ -153,7 +151,8 @@ export const getConversationById = async (req, res, next) => {
 
 export const sendReply = async (req, res, next) => {
   try {
-    const hotelId = req.user?.hotelId || 'hotel-mercier';
+    const hotelId = req.user?.hotelId;
+    if (!hotelId) return errorResponse(res, 'Authentication and hotel context required', 401);
     const { id } = req.params;
     const { body, staffName = 'Amélie Duprez', channel } = req.body;
 
@@ -205,8 +204,23 @@ export const sendReply = async (req, res, next) => {
       if (!toEmail) {
         if (conv.guest?.email) {
           toEmail = conv.guest.email;
-        } else if (conv.subject && conv.subject.includes('@')) {
-          toEmail = conv.subject;
+        } else if (conv.guest?.tags) {
+          try {
+            const parsedTags = typeof conv.guest.tags === 'string' ? JSON.parse(conv.guest.tags) : conv.guest.tags;
+            if (Array.isArray(parsedTags)) {
+              const emailTag = parsedTags.find((t) => typeof t === 'string' && t.includes('@'));
+              if (emailTag) toEmail = emailTag.trim();
+            }
+          } catch {}
+        }
+        
+        if (!toEmail && conv.subject && conv.subject.includes('@')) {
+          toEmail = conv.subject.trim();
+        }
+
+        if (!toEmail && conv.guest?.id && conv.guest.id.includes('@')) {
+          const match = conv.guest.id.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+          if (match) toEmail = match[0];
         }
       }
       if (toEmail) {
@@ -217,6 +231,7 @@ export const sendReply = async (req, res, next) => {
           subject: conv.subject || 'Message from Hotel Reception',
           text: body,
           author: 'staff',
+          recordMessage: false,
         }).catch((err) => {
           console.warn('[SendReply Outbound Email Warning]:', err.message);
         });
@@ -249,7 +264,8 @@ export const sendReply = async (req, res, next) => {
 
 export const toggleTakeover = async (req, res, next) => {
   try {
-    const hotelId = req.user?.hotelId || 'hotel-mercier';
+    const hotelId = req.user?.hotelId;
+    if (!hotelId) return errorResponse(res, 'Authentication and hotel context required', 401);
     const { id } = req.params;
     const { aiStatus } = req.body;
 
@@ -290,7 +306,8 @@ export const toggleTakeover = async (req, res, next) => {
 
 export const escalateConversation = async (req, res, next) => {
   try {
-    const hotelId = req.user?.hotelId || 'hotel-mercier';
+    const hotelId = req.user?.hotelId;
+    if (!hotelId) return errorResponse(res, 'Authentication and hotel context required', 401);
     const { id } = req.params;
     const { reason = 'Escalated by Front Office', urgency = 'High', suggested = 'Review guest request' } = req.body;
 
@@ -339,7 +356,8 @@ export const escalateConversation = async (req, res, next) => {
 
 export const resolveConversation = async (req, res, next) => {
   try {
-    const hotelId = req.user?.hotelId || 'hotel-mercier';
+    const hotelId = req.user?.hotelId;
+    if (!hotelId) return errorResponse(res, 'Authentication and hotel context required', 401);
     const { id } = req.params;
 
     const conv = await prisma.conversation.findFirst({
@@ -380,7 +398,8 @@ export const resolveConversation = async (req, res, next) => {
 
 export const receiveGuestMessage = async (req, res, next) => {
   try {
-    const hotelId = req.user?.hotelId || 'hotel-mercier';
+    const hotelId = req.user?.hotelId;
+    if (!hotelId) return errorResponse(res, 'Authentication and hotel context required', 401);
     const { id } = req.params;
     const { body, channel = 'whatsapp' } = req.body;
 

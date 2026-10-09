@@ -7,16 +7,17 @@ import { errorResponse, successResponse } from '../../utils/response.js';
  */
 export const connectPmsController = async (req, res) => {
   try {
-    const { provider, propertyId } = req.body;
+    const { provider, propertyId, clientToken } = req.body;
 
-    // Tenant isolation: Resolve hotel ID from authenticated user, never from request body
-    const hotelId = req.user?.hotelId || 'hotel-mercier';
+    // Tenant isolation: Resolve hotel ID from authenticated user, never fallback
+    const hotelId = req.user?.hotelId;
+    if (!hotelId) return errorResponse(res, 'Authentication and tenant context required', 401);
 
     if (!propertyId || typeof propertyId !== 'string' || propertyId.trim().length < 4) {
       return errorResponse(res, 'Valid Mews Access Token or Property ID is required', 400);
     }
 
-    const result = await pmsService.connectPms(hotelId, { provider, propertyId });
+    const result = await pmsService.connectPms(hotelId, { provider, propertyId, clientToken });
 
     return successResponse(res, result, 'PMS connected successfully');
   } catch (error) {
@@ -47,7 +48,8 @@ export const connectPmsController = async (req, res) => {
  */
 export const disconnectPmsController = async (req, res) => {
   try {
-    const hotelId = req.user?.hotelId || 'hotel-mercier';
+    const hotelId = req.user?.hotelId;
+    if (!hotelId) return errorResponse(res, 'Authentication and tenant context required', 401);
     const result = await pmsService.disconnectPms(hotelId);
     return successResponse(res, result, 'PMS disconnected successfully');
   } catch (error) {
@@ -61,7 +63,8 @@ export const disconnectPmsController = async (req, res) => {
  */
 export const getPmsStatusController = async (req, res) => {
   try {
-    const hotelId = req.user?.hotelId || 'hotel-mercier';
+    const hotelId = req.user?.hotelId;
+    if (!hotelId) return errorResponse(res, 'Authentication and tenant context required', 401);
     const status = await pmsService.getPmsStatus(hotelId);
     return successResponse(res, status, 'PMS status retrieved successfully');
   } catch (error) {
@@ -75,7 +78,8 @@ export const getPmsStatusController = async (req, res) => {
  */
 export const syncPmsController = async (req, res) => {
   try {
-    const hotelId = req.user?.hotelId || 'hotel-mercier';
+    const hotelId = req.user?.hotelId;
+    if (!hotelId) return errorResponse(res, 'Authentication and tenant context required', 401);
     const syncResult = await pmsService.syncPmsData(hotelId);
     return successResponse(res, syncResult, 'PMS data synchronized successfully');
   } catch (error) {
@@ -89,7 +93,8 @@ export const syncPmsController = async (req, res) => {
  */
 export const checkAvailabilityController = async (req, res) => {
   try {
-    const hotelId = req.user?.hotelId || req.query.hotelId || 'hotel-mercier';
+    const hotelId = req.user?.hotelId || req.query.hotelId;
+    if (!hotelId) return errorResponse(res, 'Hotel context required', 400);
     const { checkIn, checkOut } = req.query;
     const availability = await pmsService.checkAvailability(hotelId, { checkIn, checkOut });
     return successResponse(res, availability, 'Availability fetched successfully');
@@ -105,7 +110,8 @@ export const checkAvailabilityController = async (req, res) => {
 export const mewsWebhookController = async (req, res) => {
   try {
     const headerHotelId = req.headers['x-mews-hotel-id'] || req.headers['x-hotel-id'];
-    const hotelId = headerHotelId || req.query.hotelId || req.body?.hotelId || req.user?.hotelId || 'hotel-mercier';
+    const hotelId = headerHotelId || req.query.hotelId || req.body?.hotelId || req.user?.hotelId;
+    if (!hotelId) return errorResponse(res, 'Hotel context required for webhook', 400);
 
     // Verify webhook signature or token if configured
     const webhookSecret = process.env.MEWS_WEBHOOK_SECRET;
@@ -130,7 +136,8 @@ export const mewsWebhookController = async (req, res) => {
  */
 export const getPmsRoomsController = async (req, res) => {
   try {
-    const hotelId = req.user?.hotelId || 'hotel-mercier';
+    const hotelId = req.user?.hotelId;
+    if (!hotelId) return errorResponse(res, 'Authentication and tenant context required', 401);
     const rooms = await pmsService.getRooms(hotelId);
     return successResponse(res, rooms, 'PMS rooms retrieved successfully');
   } catch (error) {
@@ -144,7 +151,8 @@ export const getPmsRoomsController = async (req, res) => {
  */
 export const getPmsReservationsController = async (req, res) => {
   try {
-    const hotelId = req.user?.hotelId || 'hotel-mercier';
+    const hotelId = req.user?.hotelId;
+    if (!hotelId) return errorResponse(res, 'Authentication and tenant context required', 401);
     const reservations = await pmsService.getReservations(hotelId);
     return successResponse(res, reservations, 'PMS reservations retrieved successfully');
   } catch (error) {
@@ -158,7 +166,8 @@ export const getPmsReservationsController = async (req, res) => {
  */
 export const updatePmsRoomStatusController = async (req, res) => {
   try {
-    const hotelId = req.user?.hotelId || 'hotel-mercier';
+    const hotelId = req.user?.hotelId;
+    if (!hotelId) return errorResponse(res, 'Authentication and tenant context required', 401);
     const { number } = req.params;
     const { status, cleaner, note } = req.body;
 
@@ -179,7 +188,8 @@ export const updatePmsRoomStatusController = async (req, res) => {
  */
 export const getPmsServicesController = async (req, res) => {
   try {
-    const hotelId = req.user?.hotelId || 'hotel-mercier';
+    const hotelId = req.user?.hotelId;
+    if (!hotelId) return errorResponse(res, 'Authentication and tenant context required', 401);
     const services = await pmsService.getServices(hotelId);
     return successResponse(res, services, 'PMS services retrieved successfully');
   } catch (error) {

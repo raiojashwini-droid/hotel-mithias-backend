@@ -52,10 +52,17 @@ function formatIssue(i) {
 
 export const getIssues = async (req, res, next) => {
   try {
-    const hotelId = req.user?.hotelId || 'hotel-mercier';
+    const hotelId = req.user?.hotelId;
+    if (!hotelId) return errorResponse(res, 'Authentication and hotel context required', 401);
     const { status, room } = req.query;
     const where = { hotelId };
-    if (status) where.status = status;
+    if (status) {
+      if (status.toLowerCase() === 'open' || status.toLowerCase() === 'reported') {
+        where.status = { in: ['Reported', 'Open'] };
+      } else {
+        where.status = status;
+      }
+    }
     if (room) where.room = room;
 
     const issues = await prisma.issue.findMany({
@@ -73,7 +80,8 @@ export const getIssues = async (req, res, next) => {
 
 export const createIssue = async (req, res, next) => {
   try {
-    const hotelId = req.user?.hotelId || 'hotel-mercier';
+    const hotelId = req.user?.hotelId;
+    if (!hotelId) return errorResponse(res, 'Authentication and hotel context required', 401);
     const {
       room,
       title,
@@ -165,7 +173,8 @@ export const createIssue = async (req, res, next) => {
 
 export const updateIssueStatus = async (req, res, next) => {
   try {
-    const hotelId = req.user?.hotelId || 'hotel-mercier';
+    const hotelId = req.user?.hotelId;
+    if (!hotelId) return errorResponse(res, 'Authentication and hotel context required', 401);
     const { id } = req.params;
     const { status, note, via = 'dashboard' } = req.body;
 
@@ -323,7 +332,8 @@ export const updateIssueStatus = async (req, res, next) => {
 
 export const assignIssue = async (req, res, next) => {
   try {
-    const hotelId = req.user?.hotelId || 'hotel-mercier';
+    const hotelId = req.user?.hotelId;
+    if (!hotelId) return errorResponse(res, 'Authentication and hotel context required', 401);
     const { id } = req.params;
     const { assignee } = req.body;
 

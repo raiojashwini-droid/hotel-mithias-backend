@@ -37,7 +37,11 @@ export const realtimeService = {
    * Register a new SSE client connection
    */
   subscribe(hotelId, req, res) {
-    const targetHotelId = hotelId || 'hotel-mercier';
+    if (!hotelId) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ error: 'Tenant hotelId is required' }));
+    }
+    const targetHotelId = hotelId;
 
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -78,7 +82,8 @@ export const realtimeService = {
    * Broadcast an event to all connected dashboard clients of a specific hotel
    */
   broadcastToHotel(hotelId, eventType, data = {}) {
-    const targetHotelId = hotelId || 'hotel-mercier';
+    if (!hotelId) return 0;
+    const targetHotelId = hotelId;
     const payload = `event: ${eventType}\ndata: ${JSON.stringify({ ...data, timestamp: new Date().toISOString() })}\n\n`;
 
     const targets = [targetHotelId];

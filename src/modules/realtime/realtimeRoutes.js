@@ -9,7 +9,8 @@ const router = Router();
  * Connects authenticated browser clients to live event stream isolated by tenant hotelId.
  */
 router.get('/events', authenticate, (req, res) => {
-  const hotelId = req.user?.hotelId || 'hotel-mercier';
+  const hotelId = req.user?.hotelId;
+  if (!hotelId) return res.status(401).json({ success: false, message: 'Authentication required' });
   realtimeService.subscribe(hotelId, req, res);
 });
 

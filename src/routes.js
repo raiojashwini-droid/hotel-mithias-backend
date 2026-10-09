@@ -18,8 +18,14 @@ import emailRoutes from './modules/email/emailRoutes.js';
 
 const router = Router();
 
-router.get('/health', (req, res) => {
-  res.json({ status: 'ok', service: 'hotelogx-connect-backend', timestamp: new Date().toISOString() });
+router.get('/health', async (req, res) => {
+  try {
+    const { prisma } = await import('./config/database.js');
+    await prisma.$queryRaw`SELECT 1`;
+    res.json({ status: 'ok', database: 'connected', service: 'hotelogx-connect-backend', timestamp: new Date().toISOString() });
+  } catch (err) {
+    res.status(503).json({ status: 'unhealthy', database: 'disconnected', error: err.message });
+  }
 });
 
 router.get('/health-diag', async (req, res) => {

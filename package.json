@@ -22,8 +22,11 @@
     "docx": "^9.7.1",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
+    "imapflow": "^2.3.0",
     "jsonwebtoken": "^9.0.2",
+    "mailparser": "^3.9.37",
     "multer": "^2.3.0",
+    "nodemailer": "^10.0.16",
     "pdf-parse": "^2.4.5",
     "prisma": "^6.4.1",
     "uuid": "^14.0.2"

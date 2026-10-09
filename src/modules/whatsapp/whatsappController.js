@@ -1032,7 +1032,8 @@ export const handleOAuthCallback = async (req, res) => {
  */
 export const handleManualConnect = async (req, res, next) => {
   try {
-    const hotelId = req.user?.hotelId || req.body?.hotelId || 'hotel-mercier';
+    const hotelId = req.user?.hotelId || req.body?.hotelId;
+    if (!hotelId) return errorResponse(res, 'Authentication and hotel context required', 401);
     const { phoneNumberId, accessToken, displayPhoneNumber, wabaId, targetType } = req.body;
 
     if (!phoneNumberId || !accessToken || !displayPhoneNumber) {
